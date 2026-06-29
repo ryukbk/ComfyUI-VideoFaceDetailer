@@ -124,8 +124,11 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `images` | IMAGE | — | the video frames |
 | `mask_track` | MASK | — | per-frame mask of **one** tracked face (from `SAM3_TrackToMask`) |
 | `upscale_ratio` | FLOAT | 2.0 | crop is upscaled by this for resampling; `target_size = crop_size × ratio`. Paste-back undoes it exactly. |
-| `max_width_fraction` | FLOAT | 0.10 | enhance a frame **only while** the face is narrower than this fraction of the frame width |
-| `hysteresis` | FLOAT | 0.02 | dead-band around the threshold to stop on/off flicker during a slow zoom |
+| `threshold_type` | choice | width | which face dimension the gate uses: **width**, **height**, or **area**. Selects which of the three parameters below is active (the UI shows only that one). |
+| `max_width_fraction` | FLOAT | 0.10 | *(threshold_type=width)* enhance a frame **only while** the face is narrower than this fraction of the frame **width** |
+| `max_height_fraction` | FLOAT | 0.10 | *(threshold_type=height)* enhance **only while** the face is shorter than this fraction of the frame **height** |
+| `max_area_percent` | INT | 10 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **percent of the whole frame area** (e.g. 10 = faces smaller than 10% of the frame) |
+| `hysteresis` | FLOAT | 0.02 | dead-band around the threshold (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |

@@ -374,15 +374,28 @@ class FaceTrackCropAndGate:
                                             "tooltip": "Face is upscaled by this ratio for resampling, then "
                                                        "restored to original size on paste-back. Wire a "
                                                        "FloatConstant here to control it."}),
+                "threshold_type": (["width", "height", "area"], {"default": "width",
+                                    "tooltip": "Which face dimension the size gate uses: 'width' -> "
+                                               "max_width_fraction (fraction of frame width); 'height' -> "
+                                               "max_height_fraction (fraction of frame height); 'area' -> "
+                                               "max_area_percent (face bbox as a % of the whole frame area). "
+                                               "Only the matching parameter below is used."}),
                 "max_width_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
-                                                 "tooltip": "Enhance a frame ONLY while the face is narrower than "
-                                                            "this fraction of the frame width. Frames where the "
-                                                            "face is larger (e.g. after a zoom-in) are left as-is."}),
+                                                 "tooltip": "[threshold_type=width] Enhance a frame ONLY while the "
+                                                            "face is narrower than this fraction of the frame width."}),
+                "max_height_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
+                                                  "tooltip": "[threshold_type=height] Enhance a frame ONLY while the "
+                                                             "face is shorter than this fraction of the frame height."}),
+                "max_area_percent": ("INT", {"default": 10, "min": 1, "max": 100, "step": 1,
+                                             "tooltip": "[threshold_type=area] Enhance a frame ONLY while the face "
+                                                        "bbox occupies less than this percent of the whole frame "
+                                                        "area. E.g. 10 = faces smaller than 10% of the frame."}),
                 "hysteresis": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.5, "step": 0.005,
-                                         "tooltip": "Dead-band around the threshold (as a width fraction) to stop "
-                                                    "on/off flicker when the face hovers at the boundary during a "
-                                                    "slow zoom. Enhancement turns ON below (max_width_fraction - "
-                                                    "hysteresis) and OFF above (max_width_fraction + hysteresis)."}),
+                                         "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
+                                                    "the chosen measure (fraction of width/height, or fraction of "
+                                                    "area where 0.02 = 2% of frame area). Stops on/off flicker when "
+                                                    "the face hovers at the boundary. ON below (threshold - "
+                                                    "hysteresis), OFF at/above (threshold + hysteresis)."}),
                 "padding": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "smooth_alpha": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01,
                                            "tooltip": "Crop CENTER smoothing (EMA). 1.0 = follow the face exactly "
@@ -416,36 +429,61 @@ class FaceTrackCropAndGate:
                    "larger (zoomed-in) frames are left untouched. "
                    "target_size = native window * upscale_ratio.")
 
-    def crop(self, images, mask_track, upscale_ratio, max_width_fraction, hysteresis,
+    def crop(self, images, mask_track, upscale_ratio, threshold_type, max_width_fraction,
+             max_height_fraction, max_area_percent, hysteresis,
              padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
         N = min(B, mask_track.shape[0])
-        on_thresh = (max_width_fraction - hysteresis) * W   # must be below this to (re)enable
-        off_thresh = (max_width_fraction + hysteresis) * W  # at/above this -> disable
 
-        # Per-frame face boxes/centroids/width (None when face absent this frame).
-        boxes, widths = [], []
+        # Normalized threshold in [0,1] for the chosen measure, and a per-frame
+        # measure in the SAME units, so the hysteresis state machine is identical
+        # regardless of width/height/area.
+        #   width  : face_bbox_width  / frame_width
+        #   height : face_bbox_height / frame_height
+        #   area   : (face_bbox_w * face_bbox_h) / (frame_w * frame_h)
+        if threshold_type == "height":
+            thr = float(max_height_fraction)
+        elif threshold_type == "area":
+            thr = float(max_area_percent) / 100.0
+        else:  # width (default)
+            thr = float(max_width_fraction)
+        on_thresh = thr - hysteresis    # must be below this to (re)enable
+        off_thresh = thr + hysteresis   # at/above this -> disable
+
+        # Per-frame: box, and the normalized measure (None when face absent).
+        boxes, measures = [], []
         for i in range(N):
             info = _frame_face_box((mask_track[i] > 0.5).cpu().numpy())
             boxes.append(info)
-            widths.append((info[2] - info[0] + 1) if info is not None else None)
+            if info is None:
+                measures.append(None)
+                continue
+            fw = info[2] - info[0] + 1
+            fh = info[3] - info[1] + 1
+            if threshold_type == "height":
+                m = fh / H
+            elif threshold_type == "area":
+                m = (fw * fh) / float(W * H)
+            else:
+                m = fw / W
+            measures.append(m)
 
         # Per-frame enhance decision with hysteresis. Absent frames are never
         # enhanced and do not change the on/off state (we hold it across gaps).
         enhance = [False] * N
         state_on = False
         for i in range(N):
-            w = widths[i]
-            if w is None:
+            m = measures[i]
+            if m is None:
                 enhance[i] = False
                 continue
             if state_on:
-                if w >= off_thresh:
+                if m >= off_thresh:
                     state_on = False
             else:
-                if w < on_thresh:
+                if m < on_thresh:
                     state_on = True
             enhance[i] = state_on
 
@@ -454,21 +492,22 @@ class FaceTrackCropAndGate:
             # No frame qualified. Emitting an empty batch crashes downstream nodes
             # (Resize/LTX call torch.stack on it). Raise a clear, actionable error
             # instead, with the diagnostics needed to fix it.
-            present = [w for w in widths if w is not None]
+            present = [m for m in measures if m is not None]
+            unit = {"height": "frame height", "area": "frame area"}.get(
+                threshold_type, "frame width")
             if not present:
                 detail = ("the tracked mask was EMPTY on every frame — SAM3 "
                           "tracked nothing for the selected object index. Check "
                           "SAM3_TrackToMask 'object_indices' and that the face is "
                           "actually detected.")
             else:
-                minw = min(present)
+                minm = min(present)
                 detail = (f"the face never dropped below the enable threshold. "
-                          f"Smallest face width was {minw}px = "
-                          f"{minw / W * 100:.1f}% of frame width, but enhancement "
-                          f"only turns on below (max_width_fraction - hysteresis) "
-                          f"= {(max_width_fraction - hysteresis) * 100:.1f}% "
-                          f"({on_thresh:.0f}px). Raise max_width_fraction, lower "
-                          f"hysteresis, or accept that no face is small enough.")
+                          f"Smallest face was {minm * 100:.1f}% of {unit}, but "
+                          f"enhancement only turns on below (threshold - hysteresis) "
+                          f"= {on_thresh * 100:.1f}% (threshold_type={threshold_type}). "
+                          f"Raise the threshold, lower hysteresis, or accept that no "
+                          f"face is small enough.")
             raise ValueError(
                 "FaceTrackCropAndGate: 0 frames selected for enhancement — "
                 + detail +

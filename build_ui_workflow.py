@@ -144,7 +144,7 @@ NODES_TRACK = {
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     # fps is now an input (driven by source_fps); no fps widget value remains.
     "9":  ("SAM3_TrackPreview", [0.5], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, 0.10, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10, 0.02, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
     "8":  ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -277,7 +277,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, 0.10, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10, 0.02, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -323,6 +323,6 @@ for j, base in enumerate((30, 40)):
         LAYOUT_PERRUN[str(base + i)] = (5 + i, j)
 LAYOUT_PERRUN["99"] = (13, 0)
 
-build(NODES_TRACK, LAYOUT_TRACK, "face_enhance_ltx_track_workflow_UI.json")
-build(NODES_PERFACE, LAYOUT_PERFACE, "face_enhance_ltx_workflow_UI.json")
-build(NODES_PERRUN, LAYOUT_PERRUN, "face_enhance_ltx_track_perrun_workflow_UI.json")
+build(NODES_TRACK, LAYOUT_TRACK, "workflows/face_enhance_ltx_track_workflow_UI.json")
+build(NODES_PERFACE, LAYOUT_PERFACE, "workflows/face_enhance_ltx_workflow_UI.json")
+build(NODES_PERRUN, LAYOUT_PERRUN, "workflows/face_enhance_ltx_track_perrun_workflow_UI.json")

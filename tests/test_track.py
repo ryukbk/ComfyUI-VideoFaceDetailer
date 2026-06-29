@@ -10,8 +10,22 @@ def check(n, c):
 
 W = 400  # 10% = 40px
 H = 200
-crop = FaceTrackCropAndGate()
+_crop_node = FaceTrackCropAndGate()
 paste = FaceTrackPasteBack()
+
+
+class _CropShim:
+    """Adapt the old positional test calls (width-mode) to the new signature
+    crop(imgs, mt, ratio, threshold_type, max_w, max_h, max_area, hyst,
+         padding, smooth, [max_dev, size_smooth]) — tests gate on width."""
+    def crop(self, imgs, mt, ratio, max_width_fraction, hysteresis, padding,
+             smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4):
+        return _crop_node.crop(imgs, mt, ratio, "width", max_width_fraction,
+                               0.10, 10, hysteresis, padding, smooth_alpha,
+                               max_size_deviation, size_smooth_alpha)
+
+
+crop = _CropShim()
 
 def face_track(widths, cx=100, cy=100):
     """Build images + mask track where each frame has a face of given width (or None=absent)."""

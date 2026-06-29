@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-videofacedetailer"
 description = "Selectively upscale and resample small faces in a video (SAM 3/3.1 tracking + a video resampler), then composite them back at their original position and scale. Per-frame size gate, jitter-free tracked cropping, and exact paste-back."
-version = "0.1.1"
+version = "0.1.2"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 requires-python = ">=3.10"

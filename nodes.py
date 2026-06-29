@@ -386,10 +386,10 @@ class FaceTrackCropAndGate:
                 "max_height_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
                                                   "tooltip": "[threshold_type=height] Enhance a frame ONLY while the "
                                                              "face is shorter than this fraction of the frame height."}),
-                "max_area_percent": ("INT", {"default": 10, "min": 1, "max": 100, "step": 1,
+                "max_area_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 0.1,
                                              "tooltip": "[threshold_type=area] Enhance a frame ONLY while the face "
                                                         "bbox occupies less than this percent of the whole frame "
-                                                        "area. E.g. 10 = faces smaller than 10% of the frame."}),
+                                                        "area. E.g. 12.1 = faces smaller than 12.1% of the frame."}),
                 "hysteresis": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.5, "step": 0.005,
                                          "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
                                                     "the chosen measure (fraction of width/height, or fraction of "

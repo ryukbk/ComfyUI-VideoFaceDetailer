@@ -1,0 +1,21 @@
+[project]
+name = "comfyui-videofacedetailer"
+description = "Selectively upscale and resample small faces in a video (SAM 3/3.1 tracking + a video resampler), then composite them back at their original position and scale. Per-frame size gate, jitter-free tracked cropping, and exact paste-back."
+version = "0.1.0"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "numpy",
+]
+
+[project.urls]
+Repository = "https://github.com/<you>/ComfyUI-VideoFaceDetailer"
+
+# ComfyUI Registry metadata — https://docs.comfy.org/registry/specifications
+[tool.comfy]
+PublisherId = "<your-publisher-id>"
+DisplayName = "ComfyUI-VideoFaceDetailer"
+Icon = ""
+Tags = ["video", "face", "detailer", "upscale", "sam3", "ltxv"]

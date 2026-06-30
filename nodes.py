@@ -60,6 +60,24 @@ def _resize_hwc(img_hwc, out_h, out_w):
     return y[0].permute(1, 2, 0)
 
 
+def _gaussian_blur_2d(mask_hw, radius):
+    """Separable Gaussian blur of a 2D [H,W] float mask. radius<=0 -> unchanged.
+    Used to soften a face-shaped alpha so the composite has no hard mask edge."""
+    r = int(radius)
+    if r <= 0:
+        return mask_hw
+    sigma = max(0.5, r / 2.0)
+    xs = torch.arange(-r, r + 1, dtype=torch.float32, device=mask_hw.device)
+    k = torch.exp(-(xs ** 2) / (2 * sigma * sigma))
+    k = k / k.sum()
+    x = mask_hw.unsqueeze(0).unsqueeze(0)                     # [1,1,H,W]
+    kh = k.view(1, 1, 1, -1)
+    kv = k.view(1, 1, -1, 1)
+    x = F.conv2d(x, kh, padding=(0, r))
+    x = F.conv2d(x, kv, padding=(r, 0))
+    return x[0, 0].clamp_(0.0, 1.0)
+
+
 def _connected_components(mask_bool):
     """Label connected components (4-connectivity) of a 2D boolean numpy array.
 
@@ -390,6 +408,12 @@ class FaceTrackCropAndGate:
                                              "tooltip": "[threshold_type=area] Enhance a frame ONLY while the face "
                                                         "bbox occupies less than this percent of the whole frame "
                                                         "area. E.g. 12.1 = faces smaller than 12.1% of the frame."}),
+                "min_threshold_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1,
+                                             "tooltip": "Lower bound, as a PERCENT in the same measure as "
+                                                        "threshold_type (width/height -> % of that dimension; area "
+                                                        "-> % of frame area). Faces SMALLER than this are skipped "
+                                                        "(too tiny to resample usefully). 0 = no lower bound. "
+                                                        "Enhancement runs only when min < measure < max."}),
                 "hysteresis": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.5, "step": 0.005,
                                          "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
                                                     "the chosen measure (fraction of width/height, or fraction of "
@@ -431,7 +455,8 @@ class FaceTrackCropAndGate:
 
     def crop(self, images, mask_track, upscale_ratio, threshold_type, max_width_fraction,
              max_height_fraction, max_area_percent, hysteresis,
-             padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4):
+             padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
+             min_threshold_percent=0.0):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -449,8 +474,14 @@ class FaceTrackCropAndGate:
             thr = float(max_area_percent) / 100.0
         else:  # width (default)
             thr = float(max_width_fraction)
+        thr_min = max(0.0, float(min_threshold_percent) / 100.0)  # lower bound (0 = off)
+        # Upper-bound dead-band (existing behavior).
         on_thresh = thr - hysteresis    # must be below this to (re)enable
         off_thresh = thr + hysteresis   # at/above this -> disable
+        # Lower-bound dead-band (mirror of the upper one): enable only once the
+        # face is clearly above the floor, disable when it drops clearly below.
+        lo_on = thr_min + hysteresis    # must be above this to (re)enable
+        lo_off = thr_min - hysteresis   # at/below this -> disable
 
         # Per-frame: box, and the normalized measure (None when face absent).
         boxes, measures = [], []
@@ -480,10 +511,13 @@ class FaceTrackCropAndGate:
                 enhance[i] = False
                 continue
             if state_on:
-                if m >= off_thresh:
+                # turn OFF if the face grows past the upper bound OR shrinks below
+                # the lower bound (only checked when a lower bound is set).
+                if m >= off_thresh or (thr_min > 0.0 and m <= lo_off):
                     state_on = False
             else:
-                if m < on_thresh:
+                # turn ON only when below the upper bound AND above the lower bound.
+                if m < on_thresh and (thr_min <= 0.0 or m > lo_on):
                     state_on = True
             enhance[i] = state_on
 
@@ -610,6 +644,10 @@ class FaceTrackCropAndGate:
             x0 = int(round(sm[0] - half)); y0 = int(round(sm[1] - half))
             x0 = max(0, min(x0, W - s)); y0 = max(0, min(y0, H - s))
             crop = images[i, y0:y0 + s, x0:x0 + s, :]  # smoothed-size box around face
+            # Crop the FACE MASK to the same box (kept at native s×s — small/cheap).
+            # paste-back uses it as a face-shaped, feathered alpha so only face
+            # pixels are written back (no rectangular seam / background overwrite).
+            cmask = (mask_track[i, y0:y0 + s, x0:x0 + s] > 0.5).to(torch.float32).cpu()
             # Resize this crop to the common output size for a uniform clip
             # (area when shrinking, bicubic when enlarging — see _resize_hwc).
             crop = _resize_hwc(crop, out_side, out_side)
@@ -617,9 +655,10 @@ class FaceTrackCropAndGate:
             # Store the SOURCE crop box (x0,y0,s) so paste-back lands exactly where
             # this frame's crop was, at its original scale. 'run' marks which
             # contiguous block this frame belongs to. 'present'=True means a real
-            # enhanced frame (vs a pad frame appended below).
+            # enhanced frame (vs a pad frame appended below). 'cmask' is the
+            # face-shaped alpha for that box.
             entries.append({"frame": i, "x0": x0, "y0": y0, "win": s,
-                            "present": True, "run": run_idx})
+                            "present": True, "run": run_idx, "cmask": cmask})
 
         n_real = len(clip)
         n_runs = run_idx + 1
@@ -648,7 +687,7 @@ class FaceTrackCropAndGate:
                 clip.append(last.clone())
                 # Pad entries are non-present sentinels; paste-back skips them.
                 entries.append({"frame": -1, "x0": 0, "y0": 0, "win": 0,
-                                "present": False, "run": -1})
+                                "present": False, "run": -1, "cmask": None})
 
         face_clip = torch.stack(clip, dim=0)  # [target_len, out_side, out_side, C]
         target_size = max(8, int(round(out_side * upscale_ratio)))
@@ -799,7 +838,14 @@ class FaceTrackPasteBack:
                 "original_images": ("IMAGE",),
                 "processed_clip": ("IMAGE",),     # [N, *, *, C] enhanced face clip (any size; resized to window)
                 "track_data": ("FACE_TRACK_DATA",),
-                "feather": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 0.5, "step": 0.01}),
+                "feather": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 0.5, "step": 0.01,
+                                      "tooltip": "Edge softness. In 'mask' mode: Gaussian-blur radius of the "
+                                                 "face-shaped alpha, as a fraction of the crop side. In 'rectangle' "
+                                                 "mode: width of the linear edge ramp."}),
+                "blend_mode": (["mask", "rectangle"], {"default": "mask",
+                                        "tooltip": "'mask' composites using the FACE-SHAPED segmentation alpha "
+                                                   "(only face pixels are written; no rectangular seam — recommended). "
+                                                   "'rectangle' is the legacy feathered-square blend."}),
                 "only_present_frames": ("BOOLEAN", {"default": True,
                                         "tooltip": "Only composite frames where the face was actually detected."}),
             },
@@ -812,7 +858,8 @@ class FaceTrackPasteBack:
     DESCRIPTION = ("Resize the processed face clip back to its native window "
                    "(undoing upscale_ratio) and composite per frame.")
 
-    def paste(self, original_images, processed_clip, track_data, feather, only_present_frames=True):
+    def paste(self, original_images, processed_clip, track_data, feather,
+              blend_mode="mask", only_present_frames=True):
         out = original_images.clone()
         entries = track_data.get("entries", [])
         if len(entries) == 0:
@@ -851,15 +898,29 @@ class FaceTrackPasteBack:
             # shrinking — alias-free downsample — bicubic when enlarging).
             face_r = _resize_hwc(processed_clip[idx], win, win).to(out.dtype).to(out.device)
 
-            fpx = max(1, int(win * feather))
-            alpha = torch.ones(win, win, dtype=out.dtype, device=out.device)
-            if fpx > 0:
-                ramp = torch.linspace(0, 1, steps=fpx, dtype=out.dtype, device=out.device)
-                alpha[:fpx, :] *= ramp.view(-1, 1)
-                alpha[-fpx:, :] *= ramp.flip(0).view(-1, 1)
-                alpha[:, :fpx] *= ramp.view(1, -1)
-                alpha[:, -fpx:] *= ramp.flip(0).view(1, -1)
-            alpha = alpha.unsqueeze(-1)
+            cmask = e.get("cmask")
+            if blend_mode == "mask" and cmask is not None and cmask.numel() > 0:
+                # Face-SHAPED alpha: resize the stored face mask to the box and
+                # Gaussian-feather its edge, so only face pixels are written and
+                # the surrounding background is left untouched (no square seam).
+                a = cmask.to(out.dtype).to(out.device)
+                if a.shape[0] != win or a.shape[1] != win:
+                    a = F.interpolate(a.unsqueeze(0).unsqueeze(0), size=(win, win),
+                                      mode="bilinear", align_corners=False)[0, 0]
+                fpx = int(win * feather)
+                a = _gaussian_blur_2d(a, fpx)
+                alpha = a.unsqueeze(-1)
+            else:
+                # Legacy rectangular blend: full square with a linear edge ramp.
+                fpx = max(1, int(win * feather))
+                alpha = torch.ones(win, win, dtype=out.dtype, device=out.device)
+                if fpx > 0:
+                    ramp = torch.linspace(0, 1, steps=fpx, dtype=out.dtype, device=out.device)
+                    alpha[:fpx, :] *= ramp.view(-1, 1)
+                    alpha[-fpx:, :] *= ramp.flip(0).view(-1, 1)
+                    alpha[:, :fpx] *= ramp.view(1, -1)
+                    alpha[:, -fpx:] *= ramp.flip(0).view(1, -1)
+                alpha = alpha.unsqueeze(-1)
 
             region = out[f, y0:y0 + win, x0:x0 + win, :]
             # Guard against edge size mismatch

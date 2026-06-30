@@ -144,7 +144,7 @@ NODES_TRACK = {
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     # fps is now an input (driven by source_fps); no fps widget value remains.
     "9":  ("SAM3_TrackPreview", [0.5], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
     "8":  ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -162,7 +162,7 @@ NODES_TRACK = {
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
            {"model": ("10", 0), "positive": ("14", 0), "negative": ("14", 1), "latent_image": ("13", 2)}),
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
-    "20": ("FaceTrackPasteBack", [0.15, True],
+    "20": ("FaceTrackPasteBack", [0.15, "mask", True],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
     # frame_rate is now an input (driven by source_fps); remaining widgets: loop_count,
     # filename_prefix, format, pingpong, save_output.
@@ -277,7 +277,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -299,7 +299,7 @@ def _branch_numeric(base, run_index, prev_paste_ref):
         ks: ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
              {"model": ("10", 0), "positive": (cond, 0), "negative": (cond, 1), "latent_image": (i2v, 2)}),
         dec: ("VAEDecode", [], {"samples": (ks, 0), "vae": ("10", 2)}),
-        pst: ("FaceTrackPasteBack", [0.15, True],
+        pst: ("FaceTrackPasteBack", [0.15, "mask", True],
               {"original_images": prev_paste_ref, "processed_clip": (dec, 0), "track_data": (sel, 1)}),
     }
     return frag, (pst, 0)

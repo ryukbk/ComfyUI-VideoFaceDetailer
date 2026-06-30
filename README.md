@@ -128,7 +128,8 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `max_width_fraction` | FLOAT | 0.10 | *(threshold_type=width)* enhance a frame **only while** the face is narrower than this fraction of the frame **width** |
 | `max_height_fraction` | FLOAT | 0.10 | *(threshold_type=height)* enhance **only while** the face is shorter than this fraction of the frame **height** |
 | `max_area_percent` | FLOAT | 10.0 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **percent of the whole frame area** (e.g. 12.1 = faces smaller than 12.1% of the frame) |
-| `hysteresis` | FLOAT | 0.02 | dead-band around the threshold (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom |
+| `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a percent in the same measure as `threshold_type`. Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. |
+| `hysteresis` | FLOAT | 0.02 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
@@ -148,12 +149,16 @@ onto the original frame at the original location.
 
 **Inputs:** `original_images` (IMAGE), `processed_clip` (IMAGE, the resampled
 faces, **same count/order** as the crop output), `track_data` (FACE_TRACK_DATA),
-`feather` (FLOAT, 0.15 — soft-edge blend as a fraction of the crop side),
-`only_present_frames` (BOOLEAN, True). **Output:** `images` (IMAGE).
+`feather` (FLOAT, 0.15), `blend_mode` (choice, **mask**), `only_present_frames`
+(BOOLEAN, True). **Output:** `images` (IMAGE).
 
-Downsampling uses area interpolation (alias-free); upscaling uses bicubic. It
-**errors loudly** if `processed_clip` count ≠ the crop's frame count, rather than
-silently pasting faces onto the wrong frames.
+`blend_mode = mask` (default) composites using the **face-shaped segmentation
+alpha** (from the tracked mask), Gaussian-feathered — so only face pixels are
+written and the surrounding background is untouched (no rectangular seam, and
+any tone/scale drift in the crop margin is not pasted). `rectangle` is the legacy
+feathered-square blend. Downsampling uses area interpolation (alias-free);
+upscaling uses bicubic. It **errors loudly** if `processed_clip` count ≠ the
+crop's frame count, rather than silently pasting faces onto wrong frames.
 
 ### Face Track Select Run (per-run) — `FaceTrackSelectRun`
 Extracts one contiguous run from a multi-run clip for an independent LTX pass.

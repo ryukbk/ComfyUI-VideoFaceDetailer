@@ -47,7 +47,7 @@ VHS_LoadVideo ── images ──┐             │                           
                           │                                                                  │
                           ▼                                                                  │
    Face Track Crop & Gate (coherent)                                                         │
-     • keeps only frames where the face < max_width_fraction of frame width                  │
+     • keeps only frames where the face < max_fraction (of width/height/area)                 │
      • crops each kept frame, smoothed in position AND size (no wobble)                      │
      • outputs face_clip + target_size (= crop size × upscale_ratio) + num_runs              │
                           │                                                                  │
@@ -140,11 +140,9 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `images` | IMAGE | — | the video frames |
 | `mask_track` | MASK | — | per-frame mask of **one** tracked face (from `SAM3_TrackToMask`) |
 | `upscale_ratio` | FLOAT | 2.0 | crop is upscaled by this for resampling; `target_size = crop_size × ratio`. Paste-back undoes it exactly. |
-| `threshold_type` | choice | width | which face dimension the gate uses: **width**, **height**, or **area**. Selects which of the three parameters below is active (the UI shows only that one). |
-| `max_width_fraction` | FLOAT | 0.10 | *(threshold_type=width)* enhance a frame **only while** the face is narrower than this fraction of the frame **width** |
-| `max_height_fraction` | FLOAT | 0.10 | *(threshold_type=height)* enhance **only while** the face is shorter than this fraction of the frame **height** |
-| `max_area_fraction` | FLOAT | 0.10 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **fraction of the whole frame area** (e.g. 0.12 = faces smaller than 12% of the frame) |
-| `min_threshold_fraction` | FLOAT | 0.0 | **lower bound**, as a **fraction** in the same measure as `threshold_type` (matching the `max_*` units above). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** the active `max_*_fraction` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
+| `threshold_type` | choice | width | which face dimension `max_fraction` measures: **width**, **height**, or **area** |
+| `max_fraction` | FLOAT | 0.10 | **upper bound** — enhance a frame **only while** the face is *smaller* than this fraction of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. 0.12 = faces under 12% of the frame) |
+| `min_threshold_fraction` | FLOAT | 0.0 | **lower bound**, as a **fraction** in the same measure as `threshold_type` (matching `max_fraction`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_fraction` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
 | `hysteresis` | FLOAT | 0.0 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
@@ -425,8 +423,8 @@ Extra branches are safe no-ops.
   `hysteresis` too wide, or the SAM3 track was empty (check `object_indices`).
   Note: because the gate runs eagerly upstream, a downstream `LazySwitchKJ`
   cannot skip it — this graceful no-op is what makes the skip-when-no-face case
-  work end to end. Also remember only the parameter matching `threshold_type` is
-  active (e.g. under `threshold_type=width`, `max_area_fraction` is ignored).
+  work end to end. `threshold_type` only selects which dimension the single
+  `max_fraction` measures (width/height/area).
 - **`ValueError: height and width must be > 0` at the Resize (ImageResizeKJv2)
   node** → this happened in older graphs when 0 frames qualified: the gate emitted
   a tiny no-op dummy that Resize's `divisible_by` (e.g. 32) rounded down to 0

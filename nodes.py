@@ -425,26 +425,20 @@ class FaceTrackCropAndGate:
                                                        "restored to original size on paste-back. Wire a "
                                                        "FloatConstant here to control it."}),
                 "threshold_type": (["width", "height", "area"], {"default": "width",
-                                    "tooltip": "Which face dimension the size gate uses: 'width' -> "
-                                               "max_width_fraction (fraction of frame width); 'height' -> "
-                                               "max_height_fraction (fraction of frame height); 'area' -> "
-                                               "max_area_fraction (fraction of the whole frame area). "
-                                               "Only the matching parameter below is used."}),
-                "max_width_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
-                                                 "tooltip": "[threshold_type=width] Enhance a frame ONLY while the "
-                                                            "face is narrower than this fraction of the frame width."}),
-                "max_height_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
-                                                  "tooltip": "[threshold_type=height] Enhance a frame ONLY while the "
-                                                             "face is shorter than this fraction of the frame height."}),
-                "max_area_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
-                                             "tooltip": "[threshold_type=area] Enhance a frame ONLY while the face "
-                                                        "bbox occupies less than this fraction of the whole frame "
-                                                        "area. E.g. 0.12 = faces smaller than 12% of the frame."}),
+                                    "tooltip": "Which face dimension max_fraction measures: 'width' -> "
+                                               "fraction of frame width; 'height' -> fraction of frame "
+                                               "height; 'area' -> fraction of the whole frame area."}),
+                "max_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
+                                           "tooltip": "Upper bound: enhance a frame ONLY while the face is "
+                                                      "SMALLER than this fraction of the dimension chosen by "
+                                                      "threshold_type (width/height -> that dimension; area -> "
+                                                      "whole-frame area). E.g. 0.12 with threshold_type=area = "
+                                                      "faces under 12% of the frame."}),
                 "min_threshold_fraction": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
                                              "tooltip": "Lower bound, as a FRACTION in the same measure as "
                                                         "threshold_type (width/height -> fraction of that dimension; "
-                                                        "area -> fraction of frame area), matching the max_* units "
-                                                        "above. Faces SMALLER than this are skipped (too tiny to "
+                                                        "area -> fraction of frame area), matching max_fraction's "
+                                                        "units. Faces SMALLER than this are skipped (too tiny to "
                                                         "resample usefully). 0 = no lower bound. Enhancement runs "
                                                         "only when min < measure < max."}),
                 "hysteresis": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.5, "step": 0.005,
@@ -494,9 +488,8 @@ class FaceTrackCropAndGate:
                    "larger (zoomed-in) frames are left untouched. "
                    "target_size = native window * upscale_ratio.")
 
-    def crop(self, images, mask_track, upscale_ratio, threshold_type, max_width_fraction,
-             max_height_fraction, max_area_fraction, hysteresis,
-             padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
+    def crop(self, images, mask_track, upscale_ratio, threshold_type, max_fraction,
+             hysteresis, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
              min_threshold_fraction=0.0, resampler="ltx"):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
@@ -509,12 +502,9 @@ class FaceTrackCropAndGate:
         #   width  : face_bbox_width  / frame_width
         #   height : face_bbox_height / frame_height
         #   area   : (face_bbox_w * face_bbox_h) / (frame_w * frame_h)
-        if threshold_type == "height":
-            thr = float(max_height_fraction)
-        elif threshold_type == "area":
-            thr = float(max_area_fraction)
-        else:  # width (default)
-            thr = float(max_width_fraction)
+        # max_fraction is the upper bound; threshold_type only selects which
+        # per-frame measure (m, below) it is compared against.
+        thr = float(max_fraction)
         thr_min = max(0.0, float(min_threshold_fraction))  # lower bound (0 = off)
         # Upper-bound dead-band (existing behavior).
         on_thresh = thr - hysteresis    # must be below this to (re)enable

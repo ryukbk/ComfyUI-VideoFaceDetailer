@@ -22,8 +22,7 @@ for i in range(N):
 
 crop = FaceTrackCropAndGate()
 face_clip, data, target_size, n_real, n_runs, frame_count, enhanced = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width",
-    max_width_fraction=0.10, max_height_fraction=0.10, max_area_fraction=0.10,
+    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
     hysteresis=0.02, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
     size_smooth_alpha=0.4, min_threshold_fraction=0.0, resampler="minimax_h3")
 
@@ -37,7 +36,7 @@ check("h3: entries count == clip length (paste 1:1)", len(data["entries"]) == cl
 
 # default resampler stays LTX (backward compatible)
 _, data_ltx, _, nr2, _, fc_ltx, enh_ltx = crop.crop(
-    imgs, mt, 2.0, "width", 0.10, 0.10, 10.0, 0.02, 0.3, 1.0)
+    imgs, mt, 2.0, "width", 0.10, 0.02, 0.3, 1.0)
 check("default resampler is ltx", data_ltx.get("resampler") == "ltx" and (data_ltx["clip_length"] - 1) % 8 == 0)
 # frame_count output == the padded clip length (drives the resampler `length` directly)
 check("frame_count == clip length", frame_count == face_clip.shape[0] == data["clip_length"]
@@ -51,8 +50,7 @@ big = torch.zeros(N, H, W)
 for i in range(N):
     big[i, 40:160, 100:300] = 1.0  # 200px face = 50% of width, well above 10%
 noop_clip, noop_data, noop_size, noop_real, noop_runs, noop_fc, noop_enh = crop.crop(
-    imgs, big, upscale_ratio=2.0, threshold_type="width",
-    max_width_fraction=0.10, max_height_fraction=0.10, max_area_fraction=0.10,
+    imgs, big, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
     hysteresis=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
     size_smooth_alpha=0.4, min_threshold_fraction=0.0, resampler="minimax_h3")
 check("no-op: 0 real frames, does not raise", noop_real == 0 and noop_runs == 0)
@@ -66,8 +64,7 @@ check("no-op: dummy clip on h3 grid", (noop_clip.shape[0] - 5) % 17 == 0 and noo
 check("no-op: all entries present=False", all(not e.get("present") for e in noop_data["entries"]))
 # (b) empty enable window: min_threshold == threshold (the reported bug config).
 _, ew_data, _, ew_real, _, _, ew_enh = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width",
-    max_width_fraction=0.10, max_height_fraction=0.10, max_area_fraction=0.10,
+    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
     hysteresis=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
     size_smooth_alpha=0.4, min_threshold_fraction=0.10, resampler="minimax_h3")
 check("no-op: empty enable window (min==max) yields 0 real, no raise", ew_real == 0 and ew_enh is False)

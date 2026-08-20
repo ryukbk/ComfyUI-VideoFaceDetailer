@@ -831,6 +831,11 @@
           "name": "frame_rate",
           "type": "FLOAT",
           "link": 31
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": null
         }
       ],
       "outputs": [

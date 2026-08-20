@@ -131,8 +131,77 @@ SPEC = {
     },
     "VHS_VideoCombine": {
         # frame_rate converted from widget -> input so it can be driven by source_fps.
-        "inputs": [("images", "IMAGE"), ("frame_rate", "FLOAT")],
+        # audio (optional) lets the ORIGINAL track be muxed onto the saved video.
+        "inputs": [("images", "IMAGE"), ("frame_rate", "FLOAT"), ("audio", "AUDIO")],
         "outputs": [("Filenames", "VHS_FILENAMES")],
+    },
+    # ── MiniMax H3 resampler stage (see NODES_H3) ──
+    "UNETLoader": {
+        "inputs": [],
+        "outputs": [("MODEL", "MODEL")],
+    },
+    "LoraLoaderModelOnly": {
+        "inputs": [("model", "MODEL")],
+        "outputs": [("MODEL", "MODEL")],
+    },
+    "CLIPLoader": {
+        "inputs": [],
+        "outputs": [("CLIP", "CLIP")],
+    },
+    "VAELoader": {
+        "inputs": [],
+        "outputs": [("VAE", "VAE")],
+    },
+    "LoadImage": {
+        "inputs": [],
+        "outputs": [("IMAGE", "IMAGE"), ("MASK", "MASK")],
+    },
+    "LoadAudio": {
+        "inputs": [],
+        "outputs": [("AUDIO", "AUDIO")],
+    },
+    "MiniMaxH3ReferenceToVideo": {
+        # width/height/length converted from widgets -> inputs so they can be
+        # driven by the resized face clip (H3 needs W/H %32 and length on 17k+5).
+        # ref_images/ref_audios are autogrow input slots (names mirror ComfyUI).
+        "inputs": [("clip", "CLIP"), ("vae", "VAE"), ("audio_vae", "VAE"),
+                   ("ref_images.ref_image_0", "IMAGE"), ("ref_audios.ref_audio_0", "AUDIO"),
+                   ("width", "INT"), ("height", "INT"), ("length", "INT")],
+        "outputs": [("positive", "CONDITIONING"), ("LATENT", "LATENT")],
+    },
+    "H3InjectVideoLatent": {
+        "inputs": [("av_latent", "LATENT"), ("images", "IMAGE"), ("vae", "VAE")],
+        "outputs": [("av_latent", "LATENT"), ("report", "STRING")],
+    },
+    "MiniMaxH3NativeAudioLock": {
+        "inputs": [("model", "MODEL"), ("av_latent", "LATENT"),
+                   ("audio_vae", "VAE"), ("audio", "AUDIO")],
+        "outputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("exact_audio", "AUDIO")],
+    },
+    "H3PerFrameDenoise": {
+        "inputs": [("av_latent", "LATENT"), ("track_data", "FACE_TRACK_DATA")],
+        "outputs": [("av_latent", "LATENT"), ("report", "STRING")],
+    },
+    "BasicScheduler": {
+        "inputs": [("model", "MODEL")],
+        "outputs": [("SIGMAS", "SIGMAS")],
+    },
+    "BasicGuider": {
+        "inputs": [("model", "MODEL"), ("conditioning", "CONDITIONING")],
+        "outputs": [("GUIDER", "GUIDER")],
+    },
+    "KSamplerSelect": {
+        "inputs": [],
+        "outputs": [("SAMPLER", "SAMPLER")],
+    },
+    "RandomNoise": {
+        "inputs": [],
+        "outputs": [("NOISE", "NOISE")],
+    },
+    "SamplerCustomAdvanced": {
+        "inputs": [("noise", "NOISE"), ("guider", "GUIDER"), ("sampler", "SAMPLER"),
+                   ("sigmas", "SIGMAS"), ("latent_image", "LATENT")],
+        "outputs": [("output", "LATENT"), ("denoised_output", "LATENT")],
     },
 }
 
@@ -339,6 +408,96 @@ for j, base in enumerate((30, 40)):
         LAYOUT_PERRUN[str(base + i)] = (5 + i, j)
 LAYOUT_PERRUN["99"] = (13, 0)
 
+# ── Graph D: MiniMax H3 ref2va resampler with lipsync ─────────────────────────
+# Same tracked-face front-end as Graph A, but the LTX resample block is replaced
+# by an H3 img2img stage: the crop node pads to H3's 17k+5 grid
+# (resampler="minimax_h3"); MiniMaxH3ReferenceToVideo builds the joint AV latent
+# with identity refs on ref_image_0; H3InjectVideoLatent seeds its VIDEO stream
+# with the real upscaled face clip (this is what makes it frame-faithful img2img);
+# MiniMaxH3NativeAudioLock locks the ORIGINAL vocals into the AUDIO stream and
+# masks sampling to video-only so the mouth lip-syncs; H3PerFrameDenoise scales
+# denoise by face size; SamplerCustomAdvanced + VAEDecode return the refined
+# frames; FaceTrackPasteBack composites them (colour_match on); the ORIGINAL audio
+# is muxed at save. Modeled on ComfyUI-H3-FaceRefine (Carasibana)'s proven wiring.
+NODES_H3 = {
+    "1":  ("VHS_LoadVideo", ["input.mp4", 0, 0, 0, 0, 0, 1], {}),
+    "2":  ("CheckpointLoaderSimple", ["sam3.1.safetensors"], {}),
+    "3":  ("CLIPTextEncode", ["face"], {"clip": ("2", 1)}),
+    "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
+    "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
+    "24": ("GetMaskSizeAndCount", [], {"mask": ("5", 0)}),
+    "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
+    "9":  ("SAM3_TrackPreview", [0.5], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
+    # resampler="minimax_h3" -> clip padded to H3's 17k+5 grid.
+    "7":  ("FaceTrackCropAndGate",
+           [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4, "minimax_h3"],
+           {"images": ("1", 0), "mask_track": ("24", 0)}),
+    # ×32 canvas (H3 needs width/height divisible by 32).
+    "8":  ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
+           {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
+    "23": ("GetImageSizeAndCount", [], {"image": ("8", 0)}),
+    # ── H3 models ──
+    "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
+    "41": ("LoraLoaderModelOnly", ["minimax_h3_fl2v_lightx2v_turbo_4step.safetensors", 0.75],
+           {"model": ("40", 0)}),
+    "42": ("CLIPLoader", ["qwen3vl_32b_minimax_h3.safetensors", "minimax"], {}),
+    "43": ("VAELoader", ["minimax_h3_video_vae_fp16.safetensors"], {}),
+    "44": ("VAELoader", ["minimax_h3_audio_vae_fp32.safetensors"], {}),
+    "45": ("LoadImage", ["identity_reference.png"], {}),
+    # ref2va latent: identity ref + the ORIGINAL audio as a reference; W/H/length
+    # driven by the clip. ref_image_size="max" uses the ref at up to 2048px instead
+    # of downscaling it to the (small) face canvas — without this the reference has
+    # almost no effect at a small canvas (the "ref image is ignored" bug).
+    # Prompt MUST cite the reference with H3's <Subject N>/<Picture N> tags, or the
+    # face will NOT follow ref_image_0 (per MiniMax's R2V prompt guide). <Picture 1>
+    # = ref_images.ref_image_0.
+    "47": ("MiniMaxH3ReferenceToVideo",
+           ["<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality "
+            "close-up of <Subject 1>'s face, keeping the exact identity, facial features "
+            "and skin texture from <Picture 1>, speaking naturally. Consistent identity, "
+            "natural lighting.", "max"],
+           {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
+            "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": ("1", 2),
+            "width": ("8", 1), "height": ("8", 2), "length": ("23", 3)}),
+    # img2img: seed the video stream with the real upscaled face clip.
+    "48": ("H3InjectVideoLatent", [], {"av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0)}),
+    # lipsync: lock the ORIGINAL video's audio into the audio stream (denoise video
+    # only). No separate vocals file needed — the mouth follows the source audio.
+    "49": ("MiniMaxH3NativeAudioLock", [],
+           {"model": ("41", 0), "av_latent": ("48", 0), "audio_vae": ("44", 0), "audio": ("1", 2)}),
+    "50": ("H3PerFrameDenoise", [1.0, 0.35, "absolute_px", 30.0, 120.0, 1.0, 9],
+           {"av_latent": ("49", 1), "track_data": ("7", 1)}),
+    "51": ("BasicGuider", [], {"model": ("49", 0), "conditioning": ("47", 0)}),
+    "52": ("BasicScheduler", ["simple", 4, 0.45], {"model": ("49", 0)}),
+    "53": ("KSamplerSelect", ["er_sde"], {}),
+    "54": ("RandomNoise", [42, "fixed"], {}),
+    "55": ("SamplerCustomAdvanced", [],
+           {"noise": ("54", 0), "guider": ("51", 0), "sampler": ("53", 0),
+            "sigmas": ("52", 0), "latent_image": ("50", 0)}),
+    "16": ("VAEDecode", [], {"samples": ("55", 0), "vae": ("43", 0)}),
+    # colour_match=1.0 -> match refined face tone to the original region (edge seam).
+    "20": ("FaceTrackPasteBack", [0.15, "mask", True, 1.0],
+           {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
+    # "Was a face detected?" from the SAM3 mask, OUTSIDE the detailer branch.
+    "25": ("MaskHasFace", [1], {"masks": ("5", 0)}),
+    # LazySwitchKJ: on_true = detailer output (20), on_false = original video (1).
+    # on_true is LAZY, so when no face is detected the whole crop -> H3 -> paste
+    # chain (7,8,47,48,49,50,55,16,20) is NOT executed — no wasted H3 pass.
+    "26": ("LazySwitchKJ", [], {"switch": ("25", 0), "on_false": ("1", 0), "on_true": ("20", 0)}),
+    # original audio muxed onto the saved video (H3 assumes 24fps for lipsync).
+    "21": ("VHS_VideoCombine", [0, "face_enhanced_h3", "video/h264-mp4", False, True],
+           {"images": ("26", 0), "frame_rate": ("22", 0), "audio": ("1", 2)}),
+}
+LAYOUT_H3 = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
+             "24": (3, 1), "22": (1, 0), "9": (3, 3), "7": (4, 0), "8": (5, 0), "23": (5, 1),
+             "40": (4, 3), "41": (5, 3), "42": (4, 4), "43": (4, 5), "44": (4, 6),
+             "45": (5, 4),
+             "47": (6, 0), "48": (7, 0), "49": (8, 0), "50": (9, 0),
+             "51": (8, 3), "52": (9, 3), "53": (8, 4), "54": (9, 4),
+             "55": (10, 0), "16": (11, 0), "20": (12, 0), "25": (12, 2), "26": (13, 1),
+             "21": (14, 0)}
+
 build(NODES_TRACK, LAYOUT_TRACK, "workflows/face_enhance_ltx_track_workflow_UI.json")
 build(NODES_PERFACE, LAYOUT_PERFACE, "workflows/face_enhance_ltx_workflow_UI.json")
 build(NODES_PERRUN, LAYOUT_PERRUN, "workflows/face_enhance_ltx_track_perrun_workflow_UI.json")
+build(NODES_H3, LAYOUT_H3, "workflows/face_enhance_h3_track_workflow_UI.json")

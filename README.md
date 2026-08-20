@@ -5,8 +5,10 @@ back into the original footage at their original position and scale — without
 touching frames where the face is already large enough.
 
 It is built around ComfyUI's **native SAM 3 / 3.1** tracking nodes and a video
-resampler (the examples use the native **LTXV** image-to-video nodes), and adds
-the glue that none of those provide on their own:
+resampler — either the native **LTXV** image-to-video nodes **or the local
+**MiniMax H3** joint audio-video model (with **lip-sync to the original audio**;
+see [MiniMax H3](#minimax-h3-resampler-with-lip-sync)) — and adds the glue that
+none of those provide on their own:
 
 - a **size gate** — only enhance a face while it is smaller than a chosen
   fraction of the frame width;
@@ -88,12 +90,21 @@ in ComfyUI). The **example workflows** additionally require:
 | Dependency | Used for |
 |---|---|
 | Native **SAM 3 / 3.1** nodes (bundled with recent ComfyUI) | `SAM3_VideoTrack`, `SAM3_TrackToMask`, `SAM3_TrackPreview` |
-| Native **LTXV** nodes (bundled with ComfyUI) | the video resample pass |
+| Native **LTXV** nodes (bundled with ComfyUI) | the video resample pass (LTX workflows) |
+| Native **MiniMax H3** nodes (`comfy_extras/nodes_minimax_h3.py`, bundled with a recent ComfyUI) | the video resample pass (H3 workflow): `MiniMaxH3ReferenceToVideo`, `UNETLoader`/`CLIPLoader`/`VAELoader`, `SamplerCustomAdvanced`, etc. |
 | [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `GetImageSizeAndCount`, `GetMaskSizeAndCount`, `LazySwitchKJ` |
 | [**ComfyUI-VideoHelperSuite**](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) | `VHS_LoadVideo`, `VHS_VideoCombine`, `VHS_VideoInfo` |
 
-You also need a SAM 3 / 3.1 checkpoint and an LTXV checkpoint placed in the usual
-ComfyUI model folders.
+You also need a SAM 3 / 3.1 checkpoint plus **either** an LTXV checkpoint **or**
+the MiniMax H3 models (diffusion model, Qwen3-VL text encoder, and the H3 video +
+audio VAEs — [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3))
+placed in the usual ComfyUI model folders.
+
+> **The H3 img2img / lip-sync / per-frame-denoise nodes are built into this pack**
+> (`H3InjectVideoLatent`, `MiniMaxH3NativeAudioLock`, `H3PerFrameDenoise`), so the
+> H3 workflow needs **no third-party node packs** beyond core H3 (and KJNodes/VHS
+> as above). Their logic is adapted from the community packs credited under
+> [Acknowledgements](#acknowledgements).
 
 ---
 
@@ -106,9 +117,14 @@ Drag any of these onto the ComfyUI canvas (they are UI workflow-format JSON):
 | `workflows/face_enhance_ltx_track_workflow_UI.json` | **Recommended.** Temporally-coherent single LTX pass over one tracked face. |
 | `workflows/face_enhance_ltx_track_perrun_workflow_UI.json` | Reference variant that gives **each run its own LTX pass** (no cross-run bridging). Ships configured for up to 2 runs. |
 | `workflows/face_enhance_ltx_workflow_UI.json` | Per-frame, per-face variant (uses `SAM3_Detect` union masks; handles multiple faces per frame, no tracking). |
+| `workflows/face_enhance_h3_track_workflow_UI.json` | **MiniMax H3 variant** with lip-sync. Same tracked front-end, but the LTX block is replaced by H3 img2img (`MiniMaxH3ReferenceToVideo` → `H3InjectVideoLatent` → `MiniMaxH3NativeAudioLock` → `H3PerFrameDenoise` → `SamplerCustomAdvanced`). See [MiniMax H3](#minimax-h3-resampler-with-lip-sync). |
 
 Set the placeholders before running: the input `video`, the SAM 3 / 3.1
-`ckpt_name`, and the LTXV `ckpt_name`.
+`ckpt_name`, and the LTXV `ckpt_name` (LTX workflows). For the **H3** workflow set
+instead: the H3 diffusion model / text encoder / VAEs on the loaders and an
+**identity reference image** (`LoadImage`) of the person. Lip-sync uses the source
+video's **own audio** automatically — no separate track needed (swap in an
+isolated-vocals source on the audio-lock input if you want a cleaner signal).
 
 ---
 
@@ -134,6 +150,7 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
 | `size_smooth_alpha` | FLOAT | 0.4 | crop **size** smoothing (EMA) — the actual *wobble* control, independent of position |
+| `resampler` | choice | ltx | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **ltx** → `8n+1` (LTXVImgToVideo); **minimax_h3** → `17k+5` (MiniMax H3). The padded frame count is what you wire into the resampler's `length`, so paste-back stays 1:1. Leave `ltx` for the LTX workflows. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
 (INT), `enhanced_frames` (INT), `num_runs` (INT).
@@ -150,7 +167,13 @@ onto the original frame at the original location.
 **Inputs:** `original_images` (IMAGE), `processed_clip` (IMAGE, the resampled
 faces, **same count/order** as the crop output), `track_data` (FACE_TRACK_DATA),
 `feather` (FLOAT, 0.15), `blend_mode` (choice, **mask**), `only_present_frames`
-(BOOLEAN, True). **Output:** `images` (IMAGE).
+(BOOLEAN, True), `colour_match` (FLOAT, 0.0). **Output:** `images` (IMAGE).
+
+`colour_match` (0 = off, back-compat default) matches the refined face's
+per-channel mean/std to the original crop region before compositing, so an
+independent resample pass doesn't paste back a subtly brighter/shifted face —
+the main lever for a clean **edge/seam match** (recommended `~1.0` for the
+generative MiniMax H3 path). See [edges & denoise](#edges-seams-and-denoise).
 
 `blend_mode = mask` (default) composites using the **face-shaped segmentation
 alpha** (from the tracked mask), Gaussian-feathered — so only face pixels are
@@ -190,6 +213,91 @@ nodes; use when you don't have/ want a single tracked subject.
 A simple primitive: zero out per-frame masks whose face bbox is ≥
 `max_width_fraction` of the frame width. Pairs with KJNodes'
 `FilterZeroMasksAndCorrespondingImages` for custom one-crop-per-frame pipelines.
+
+### MiniMax H3 img2img / lip-sync nodes
+These three turn the local **MiniMax H3** joint audio-video model into a face
+resampler for the tracked pipeline. Only the H3 workflow uses them; the LTX
+workflows ignore them.
+
+- **H3 Inject Video Latent (img2img) — `H3InjectVideoLatent`.** Encodes the
+  upscaled face clip into the **video stream** of H3's joint AV latent so the
+  sampler runs genuine img2img (H3's stock nodes start from zeros, which would
+  *regenerate* rather than *refine*). Inputs: `av_latent` (from
+  `MiniMaxH3ReferenceToVideo`), `images` (the upscaled `face_clip`), `vae` (H3
+  **video** VAE).
+- **MiniMax H3 Native Audio Lock (lipsync) — `MiniMaxH3NativeAudioLock`.** Encodes
+  the **original audio** (the source video's track, or an isolated-vocals source)
+  into the audio stream and masks sampling so only video denoises while attending
+  to that fixed audio — this shapes the mouth. Inputs: `model`, `av_latent`,
+  `audio_vae` (H3 **audio** VAE), `audio`.
+  Outputs a patched `model`. Relies on core H3 honouring the
+  `minimax_h3_lock_audio_clean` transformer option.
+- **H3 Per-Frame Denoise — `H3PerFrameDenoise`.** Varies denoise along time via the
+  latent noise mask — strong on tiny faces (synthesise), gentle on large ones
+  (preserve) — sourcing per-frame face size from `track_data`. Place **after** the
+  audio lock so its audio-side zeros survive.
+
+---
+
+## MiniMax H3 resampler (with lip-sync)
+
+`workflows/face_enhance_h3_track_workflow_UI.json` swaps the LTX block for a local
+MiniMax H3 img2img pass that lip-syncs the refined face to the original audio.
+
+**Pipeline:** `FaceTrackCropAndGate` (`resampler = minimax_h3`) → `ImageResizeKJv2`
+(×32) → `MiniMaxH3ReferenceToVideo` (identity refs on `ref_image_0`; `width`/`height`
+from the resize, `length` from the clip's frame count) → `H3InjectVideoLatent`
+(seed the video stream with the face clip) → `MiniMaxH3NativeAudioLock` (lock the
+source video's audio) → `H3PerFrameDenoise` → `SamplerCustomAdvanced` → `VAEDecode` →
+`FaceTrackPasteBack` (`colour_match ≈ 1.0`) → `VHS_VideoCombine` (mux the original
+audio).
+
+**Constraints (handled for you):**
+- **Frame count on H3's `17k+5` grid** — set by `resampler = minimax_h3` on the crop
+  node; the padded count drives H3 `length`, and pad frames are ignored on
+  paste-back.
+- **Canvas divisible by 32** — the `ImageResizeKJv2` `divisible_by = 32` widget.
+- **24 fps** — H3 interprets `length` at 24 fps, so lip-sync is most accurate on
+  24 fps source; the result is muxed with the original audio at the source fps.
+
+**Identity vs. content:** the face clip is the img2img *content* (via
+`H3InjectVideoLatent`); `ref_image_0` is the *identity* reference (the character
+image you generated with). Do **not** feed the clip as `ref_videos` — that
+regenerates rather than refines.
+
+> **Set `ref_image_size = max` on `MiniMaxH3ReferenceToVideo`** (the shipped
+> value). At `match` the reference is downscaled to the small face canvas and
+> barely influences identity — effectively "the ref image is ignored," a common
+> gotcha. `max` keeps the reference at up to 2048px (slower, but the identity
+> actually takes). Lip-sync is driven by the **source video's own audio**, wired
+> into both `ref_audio_0` and the audio lock.
+
+> **The prompt must cite the reference, or the face won't follow it.** Per
+> MiniMax's R2V prompt guide, a reference image only binds to the subject when the
+> prompt names it with the `<Subject N>` / `<Picture N>` tags — `<Picture 1>` is
+> `ref_image_0`, `<Picture 2>` is `ref_image_1`, etc. (audio/video refs use
+> `<Audio N>` / `<Video N>`). The shipped prompt does this:
+> *"`<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality
+> close-up of <Subject 1>'s face, keeping the exact identity, facial features and
+> skin texture from <Picture 1>, speaking naturally. …`"* A generic prompt with no
+> `<Picture N>` tag (e.g. "a woman talking on the phone") leaves the identity
+> unbound even when a reference image is connected.
+
+### Edges, seams, and denoise
+
+If the pasted face doesn't match the surrounding video at the edges:
+- **`colour_match`** on `FaceTrackPasteBack` (≈1.0 for H3) removes tone/brightness
+  drift between the independent resample pass and the original — the single most
+  effective seam fix.
+- **Denoise is an indirect lever:** lower denoise keeps the refined face closer to
+  the original in pose/scale/tone, so it lines up under the feather; push it too
+  high and the head drifts relative to the body, which no mask can hide. On H3,
+  `denoise` lives on `BasicScheduler` (not `SplitSigmas`), and H3's large
+  sigma-shift makes small values stronger than they look.
+- **`H3PerFrameDenoise`** avoids over-rewriting already-large faces — where seams
+  are most visible — by dropping denoise as face size grows.
+- **`feather`** / **`padding`** put the seam in hair/background; SAM-style masks
+  trace tightly, so lower `feather` if you use them.
 
 ---
 
@@ -252,6 +360,18 @@ GNU Affero General Public License v3.0 (AGPL-3.0) — see `LICENSE`.
 
 ## Acknowledgements
 
-Built on top of ComfyUI's native **SAM 3 / 3.1** and **LTXV** nodes, and designed
-to interoperate with [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)
-and [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite).
+Built on top of ComfyUI's native **SAM 3 / 3.1**, **LTXV**, and **MiniMax H3**
+nodes, and designed to interoperate with
+[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) and
+[ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite).
+
+The MiniMax H3 img2img / lip-sync / per-frame-denoise nodes
+(`H3InjectVideoLatent`, `MiniMaxH3NativeAudioLock`, `H3PerFrameDenoise`) adapt the
+approach first worked out in:
+- [**ComfyUI-H3-FaceRefine**](https://github.com/Carasibana/ComfyUI-H3-FaceRefine)
+  by Carasibana (MIT) — the video-latent img2img injection and per-frame denoise;
+- [**ComfyUI-H3-NativeAudioLock**](https://github.com/Shrek3OnVH5/MiniMax-H3-NativeAudio-MusicVideo-Workflow)
+  by Shrek3OnVH5 — the native-audio lock that drives lip-sync.
+
+Those packs are MIT-licensed; this repository is AGPL-3.0, with which the adapted
+code is redistributed here with attribution.

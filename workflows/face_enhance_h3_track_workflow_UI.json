@@ -914,7 +914,7 @@
         "Node name for S&R": "MiniMaxH3ReferenceToVideo"
       },
       "widgets_values": [
-        "<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality close-up of <Subject 1>'s face, keeping the exact identity, facial features and skin texture from <Picture 1>, speaking naturally. Consistent identity, natural lighting.",
+        "subject_definitions:\n<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) \u2014 the spoken vocal track the mouth must follow.\n\nsummary:\n[reference generation + audio reference] The target video is a sharp, detailed close-up of <Subject 1> speaking naturally, keeping the exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.\n<Picture 1> ([Shot 1] first frame): fully_preserved - used as the identity and appearance anchor for the face.\n<Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.\n\ndetailed_description:\nThe target video is a high-quality, sharp, naturally-lit close-up in a realistic photographic style.\n[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in soft natural light, preserving the exact identity, facial features and skin texture from <Picture 1>. Speaking naturally and lip-syncing precisely to <Audio 1>, the lips, mouth and jaw move in time with the speech while the identity stays consistent.\n\noverall_soundscape:\nThe spoken voice from <Audio 1> is the only diegetic sound; keep it clean with no added ambience.\n\nnon_diegetic_music:\nNone.",
         1344,
         768,
         124,
@@ -1062,9 +1062,6 @@
       "widgets_values": [
         1.0,
         0.35,
-        "absolute_px",
-        30.0,
-        120.0,
         1.0,
         9
       ]

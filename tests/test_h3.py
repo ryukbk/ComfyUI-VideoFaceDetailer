@@ -32,6 +32,12 @@ check("h3: data records resampler", data.get("resampler") == "minimax_h3")
 check("h3: data clip_length matches", data.get("clip_length") == clip_len and data.get("ltx_length") == clip_len)
 present = [e for e in data["entries"] if e.get("present")]
 check("h3: present entries carry face_px", len(present) == n_real and all(e.get("face_px", 0) > 0 for e in present))
+# H3FaceRefine reads these to ramp per-frame denoise between the gate's thresholds.
+check("h3: track_data carries gate window", data.get("threshold_type") == "width"
+      and abs(data.get("max_threshold_frac", -1) - 0.10) < 1e-9
+      and data.get("min_threshold_frac") == 0.0)
+check("h3: present entries carry measure_frac (threshold_type units)",
+      all(e.get("measure_frac", 0) > 0 for e in present))
 check("h3: entries count == clip length (paste 1:1)", len(data["entries"]) == clip_len)
 
 # default resampler stays LTX (backward compatible)

@@ -507,17 +507,45 @@ NODES_H3 = {
     # driven by the clip. ref_image_size="max" uses the ref at up to 2048px instead
     # of downscaling it to the (small) face canvas — without this the reference has
     # almost no effect at a small canvas (the "ref image is ignored" bug).
-    # Prompt MUST cite the reference with H3's <Subject N>/<Picture N> tags, or the
-    # face will NOT follow ref_image_0 (per MiniMax's R2V prompt guide). <Picture 1>
-    # = ref_images.ref_image_0.
+    # Prompt follows MiniMax H3's reference-conditioned STRUCTURED format
+    # (VIDEO_PROMPT_WRITING_GUIDE_ref_en.md): the six ordered sections
+    # subject_definitions / summary / retention_analysis / detailed_description /
+    # overall_soundscape / non_diegetic_music. It MUST cite each reference with its
+    # tag or the model ignores it: <Picture 1> = ref_images.ref_image_0 (identity),
+    # <Audio 1> = ref_audios.ref_audio_0 (the sliced source speech for lip-sync).
+    # retention_analysis uses fully_preserved for the identity/frame and fully_copy
+    # for the audio (we lock the original audio exactly).
     # widget order is [prompt, width, height, length, ref_image_size]; width/height/
     # length are also inputs (the links drive them) but their widget values MUST be
     # present so ref_image_size="max" lands on the right widget, not "match".
     "47": ("MiniMaxH3ReferenceToVideo",
-           ["<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality "
-            "close-up of <Subject 1>'s face, keeping the exact identity, facial features "
-            "and skin texture from <Picture 1>, speaking naturally. Consistent identity, "
-            "natural lighting.", 1344, 768, 124, "max"],
+           ["subject_definitions:\n"
+            "<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice "
+            "reference for <Subject 1> (S1) — the spoken vocal track the mouth must follow.\n\n"
+            "summary:\n"
+            "[reference generation + audio reference] The target video is a sharp, "
+            "detailed close-up of <Subject 1> speaking naturally, keeping the exact "
+            "identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\n"
+            "retention_analysis:\n"
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial "
+            "features, identity and skin texture from <Picture 1> are retained.\n"
+            "<Picture 1> ([Shot 1] first frame): fully_preserved - used as the identity "
+            "and appearance anchor for the face.\n"
+            "<Audio 1>: fully_copy - the mouth shapes and speech timing follow this "
+            "audio exactly for lip-sync.\n\n"
+            "detailed_description:\n"
+            "The target video is a high-quality, sharp, naturally-lit close-up in a "
+            "realistic photographic style.\n"
+            "[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in "
+            "soft natural light, preserving the exact identity, facial features and skin "
+            "texture from <Picture 1>. Speaking naturally and lip-syncing precisely to "
+            "<Audio 1>, the lips, mouth and jaw move in time with the speech while the "
+            "identity stays consistent.\n\n"
+            "overall_soundscape:\n"
+            "The spoken voice from <Audio 1> is the only diegetic sound; keep it clean "
+            "with no added ambience.\n\n"
+            "non_diegetic_music:\n"
+            "None.", 1344, 768, 124, "max"],
            {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
             "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": ("57", 0),
             "width": ("8", 1), "height": ("8", 2), "length": ("7", 5)}),
@@ -527,7 +555,7 @@ NODES_H3 = {
            {"audio": ("1", 2), "track_data": ("7", 1), "source_fps": ("22", 0)}),
     # One node: img2img inject (face clip) + lip-sync (original audio) + per-frame
     # denoise. Outputs the patched model and the prepared AV latent.
-    "48": ("H3FaceRefine", [1.0, 0.35, "absolute_px", 30.0, 120.0, 1.0, 9],
+    "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9],
            {"model": ("56", 0), "av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0),
             "track_data": ("7", 1), "audio_vae": ("44", 0), "audio": ("57", 0)}),
     # Attention backend override, applied right after the Lora loader (falls back

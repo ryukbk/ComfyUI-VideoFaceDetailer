@@ -641,6 +641,8 @@ class FaceTrackCropAndGate:
                     "orig_shape": (B, H, W, C), "out_side": side,
                     "upscale_ratio": float(upscale_ratio), "n_real": 0,
                     "n_runs": 0, "clip_length": dummy_len, "resampler": resampler,
+                    "threshold_type": threshold_type, "max_threshold_frac": thr,
+                    "min_threshold_frac": thr_min,
                     "ltx_length": dummy_len}
             target_size = max(8, int(round(side * upscale_ratio)))
             # frame_count = the (padded) clip length, so the resampler's `length`
@@ -758,13 +760,15 @@ class FaceTrackCropAndGate:
             # contiguous block this frame belongs to. 'present'=True means a real
             # enhanced frame (vs a pad frame appended below). 'cmask' is the
             # face-shaped alpha for that box.
-            # Source face height (px) of THIS frame's face component — used by
-            # H3FaceRefine's per-frame denoise (scales denoise inversely to face size).
+            # Source face height (px) of THIS frame's face component (informational).
+            # measure_frac = the face size in the gate's threshold_type units
+            # (same fraction the gate compared against the window) — H3FaceRefine's
+            # per-frame denoise ramps between min_threshold and max_threshold using it.
             _fb = boxes[i]
             face_px = float(_fb[3] - _fb[1] + 1)
             entries.append({"frame": i, "x0": x0, "y0": y0, "win": s,
                             "present": True, "run": run_idx, "cmask": cmask,
-                            "face_px": face_px})
+                            "face_px": face_px, "measure_frac": float(measures[i])})
 
         n_real = len(clip)
         n_runs = run_idx + 1
@@ -795,6 +799,10 @@ class FaceTrackCropAndGate:
         data = {"entries": entries, "orig_shape": (B, H, W, C), "out_side": out_side,
                 "upscale_ratio": float(upscale_ratio), "n_real": n_real,
                 "n_runs": n_runs, "clip_length": target_len, "resampler": resampler,
+                # Gate window (fractions) + measure, so H3FaceRefine can ramp its
+                # per-frame denoise between min_threshold and max_threshold.
+                "threshold_type": threshold_type, "max_threshold_frac": thr,
+                "min_threshold_frac": thr_min,
                 # back-compat: older nodes/workflows read "ltx_length".
                 "ltx_length": target_len}
         if n_runs > 1:
@@ -1146,18 +1154,11 @@ class H3FaceRefine:
                 "vae": ("VAE",),
                 "track_data": ("FACE_TRACK_DATA",),
                 "strength_small_face": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Denoise multiplier where the face is SMALLEST. 1.0 = the full "
-                               "denoise set on BasicScheduler."}),
+                    "tooltip": "Denoise multiplier where the face is SMALLEST — i.e. at the gate's "
+                               "min_threshold_percent. 1.0 = the full denoise set on BasicScheduler."}),
                 "strength_large_face": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Denoise multiplier where the face is LARGEST. Lower preserves detail "
-                               "(and keeps edges matching)."}),
-                "scale_mode": (["absolute_px", "relative_to_clip"], {"default": "absolute_px",
-                    "tooltip": "absolute_px: strength from real source-pixel face height via "
-                               "face_px_small/large. relative_to_clip: normalise to this clip's own range."}),
-                "face_px_small": ("FLOAT", {"default": 30.0, "min": 4.0, "max": 400.0, "step": 1.0,
-                    "tooltip": "Face height (source px) at/below which strength_small_face applies."}),
-                "face_px_large": ("FLOAT", {"default": 120.0, "min": 8.0, "max": 800.0, "step": 1.0,
-                    "tooltip": "Face height (source px) at/above which strength_large_face applies."}),
+                    "tooltip": "Denoise multiplier where the face is LARGEST — i.e. at the gate's "
+                               "max_threshold_percent. Lower preserves detail (and keeps edges matching)."}),
                 "gamma": ("FLOAT", {"default": 1.0, "min": 0.2, "max": 4.0, "step": 0.1,
                     "tooltip": ">1 keeps strength high until the face is genuinely large; <1 drops early."}),
                 "smooth_frames": ("INT", {"default": 9, "min": 1, "max": 61, "step": 2,
@@ -1174,11 +1175,14 @@ class H3FaceRefine:
     FUNCTION = "run"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("MiniMax H3 face-refine setup: img2img inject + audio lip-sync + "
-                   "per-frame denoise, in one node.")
+                   "per-frame denoise, in one node. Per-frame denoise ramps between "
+                   "strength_small_face (at the gate's min_threshold_percent) and "
+                   "strength_large_face (at max_threshold_percent), using the gate's "
+                   "threshold_type measure.")
 
     def run(self, model, av_latent, images, vae, track_data,
-            strength_small_face, strength_large_face, face_px_small, face_px_large,
-            gamma, smooth_frames, scale_mode="absolute_px", audio_vae=None, audio=None):
+            strength_small_face, strength_large_face,
+            gamma, smooth_frames, audio_vae=None, audio=None):
         import comfy.nested_tensor
         reports = []
 
@@ -1250,22 +1254,37 @@ class H3FaceRefine:
         entries = track_data.get("entries", [])
         if not entries:
             raise ValueError("track_data has no entries.")
-        face_list, last = [], float(face_px_small)
+        # Per-frame face measure in the GATE's threshold_type units (a fraction),
+        # recorded by FaceTrackCropAndGate. The denoise ramp bounds come straight
+        # from the gate: min_threshold (smallest qualifying face) -> full denoise,
+        # max_threshold (largest) -> gentle. So the ramp automatically follows
+        # threshold_type and the exact window you set on the gate.
+        meas_list, last = [], None
         for e in entries:
-            fp = e.get("face_px")
-            if not fp or fp <= 0:
-                fp = last
-            last = fp
-            face_list.append(float(fp))
-        face = np.array(face_list, dtype=np.float64)
-        if scale_mode == "relative_to_clip":
-            lo, hi = float(face.min()), float(face.max())
+            mf = e.get("measure_frac")
+            if mf is None or mf <= 0:
+                mf = last
+            if mf is not None:
+                last = mf
+            meas_list.append(mf)
+        first_valid = next((m for m in meas_list if m is not None), 0.0)
+        meas = np.array([first_valid if m is None else m for m in meas_list],
+                        dtype=np.float64)
+        lo = track_data.get("min_threshold_frac")
+        hi = track_data.get("max_threshold_frac")
+        if lo is None or hi is None or float(hi) - float(lo) < 1e-9:
+            # Fallback (e.g. track_data from an older gate): normalise to this
+            # clip's own observed face-size range instead of the gate window.
+            lo, hi = float(meas.min()), float(meas.max())
+            reports.append("denoise ramp: clip-relative (gate thresholds absent)")
         else:
-            lo, hi = float(face_px_small), float(face_px_large)
-        if hi - lo < 1e-6:
-            t = np.zeros_like(face)
+            lo, hi = float(lo), float(hi)
+            reports.append(f"denoise ramp: {lo * 100:.2f}%–{hi * 100:.2f}% "
+                           f"({track_data.get('threshold_type', 'width')})")
+        if hi - lo < 1e-9:
+            t = np.zeros_like(meas)
         else:
-            t = np.clip((face - lo) / (hi - lo), 0.0, 1.0)
+            t = np.clip((meas - lo) / (hi - lo), 0.0, 1.0)
         t = t ** float(gamma)
         strength = strength_small_face + (strength_large_face - strength_small_face) * t
         k = int(smooth_frames)

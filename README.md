@@ -241,14 +241,18 @@ resampler for the tracked pipeline. It does three things in the one correct orde
    denoises while attending to that fixed audio — this shapes the mouth. Relies on
    core H3 honouring the `minimax_h3_lock_audio_clean` transformer option.
 3. **per-frame denoise** — varies denoise along time via the latent noise mask,
-   strong on tiny faces (synthesise) and gentle on large ones (preserve), sourcing
-   per-frame face size from `track_data`.
+   strong on the smallest faces (synthesise) and gentle on the largest (preserve).
+   The ramp bounds come straight from the gate: the per-frame face measure and the
+   `min_threshold_percent` / `max_threshold_percent` window are read from
+   `track_data`, so it **follows `threshold_type`** and the exact window you set —
+   no separate pixel numbers to tune.
 
 **Inputs:** `model`, `av_latent` (from `MiniMaxH3ReferenceToVideo`), `images` (the
 upscaled `face_clip`), `vae` (H3 **video** VAE), `track_data`; and optionally
 `audio_vae` (H3 **audio** VAE) + `audio` for lip-sync (omit both to skip it). Plus
-the per-frame-denoise widgets (`strength_small_face`, `strength_large_face`,
-`scale_mode`, `face_px_small`, `face_px_large`, `gamma`, `smooth_frames`).
+the per-frame-denoise widgets: `strength_small_face` (applied at the gate's
+`min_threshold_percent`), `strength_large_face` (at `max_threshold_percent`),
+`gamma`, `smooth_frames`.
 **Outputs:** patched `model` (→ `BasicGuider` / `BasicScheduler`), `av_latent`
 (→ `SamplerCustomAdvanced.latent_image`), and a `report` string. Set the overall
 strength with `BasicScheduler`'s `denoise`.
@@ -348,16 +352,32 @@ than refines.
 > actually takes). Lip-sync is driven by the **source video's own audio**, wired
 > into both `ref_audio_0` and the audio lock.
 
-> **The prompt must cite the reference, or the face won't follow it.** Per
-> MiniMax's R2V prompt guide, a reference image only binds to the subject when the
-> prompt names it with the `<Subject N>` / `<Picture N>` tags — `<Picture 1>` is
-> `ref_image_0`, `<Picture 2>` is `ref_image_1`, etc. (audio/video refs use
-> `<Audio N>` / `<Video N>`). The shipped prompt does this:
-> *"`<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality
-> close-up of <Subject 1>'s face, keeping the exact identity, facial features and
-> skin texture from <Picture 1>, speaking naturally. …`"* A generic prompt with no
-> `<Picture N>` tag (e.g. "a woman talking on the phone") leaves the identity
-> unbound even when a reference image is connected.
+> **The prompt must cite the references, or the model ignores them.** Per
+> MiniMax's [reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md),
+> a reference only binds when the prompt names it with its tag: `<Picture 1>` =
+> `ref_image_0` (the identity image), `<Audio 1>` = `ref_audio_0` (the sliced
+> source speech), with `<Subject N>` / `<Video N>` for the other kinds. The
+> shipped prompt follows the guide's **structured, six-section** format —
+> `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`,
+> `overall_soundscape`, `non_diegetic_music` — and cites both references:
+>
+> ```
+> subject_definitions:
+> <Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) …
+> …
+> retention_analysis:
+> <Subject 1> …: fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.
+> <Picture 1> …: fully_preserved …
+> <Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.
+> …
+> ```
+>
+> `retention_analysis` is the section that tells H3 how tightly to hold each
+> reference — `fully_preserved` for the identity/frame, `fully_copy` for the
+> locked audio (visible refs also allow `partially_preserved` / `attribute_transfer`
+> / `weak_reference`; audio allows `partially_copy` / `reference` / `weak_reference`).
+> A generic prompt with no `<Picture N>` / `<Audio N>` tags leaves the identity and
+> lip-sync unbound even when the references are connected.
 
 ### Packaging the detailer as a subgraph
 
@@ -487,12 +507,20 @@ nodes, and designed to interoperate with
 [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) and
 [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite).
 
-The `H3FaceRefine` node's img2img / lip-sync / per-frame-denoise logic adapts the
-approach first worked out in:
-- [**ComfyUI-H3-FaceRefine**](https://github.com/Carasibana/ComfyUI-H3-FaceRefine)
-  by Carasibana (MIT) — the video-latent img2img injection and per-frame denoise;
-- [**ComfyUI-H3-NativeAudioLock**](https://github.com/Shrek3OnVH5/MiniMax-H3-NativeAudio-MusicVideo-Workflow)
-  by Shrek3OnVH5 — the native-audio lock that drives lip-sync.
+The single `H3FaceRefine` node folds together — and adapts to this pack's
+tracked-face pipeline — techniques worked out by the community:
+- **video-latent img2img injection** and **per-frame denoise via the latent noise
+  mask**, from
+  [**ComfyUI-H3-FaceRefine**](https://github.com/Carasibana/ComfyUI-H3-FaceRefine)
+  by Carasibana (MIT) — originally its separate `H3InjectVideoLatent` and
+  `H3PerFrameDenoise` nodes. Here they are merged into one node, and the per-frame
+  denoise ramp is driven by this pack's gate window (`min_threshold_percent` /
+  `max_threshold_percent`, following `threshold_type`) rather than the original's
+  absolute face-pixel sizes.
+- the **native-audio lock** for lip-sync (the `minimax_h3_lock_audio_clean`
+  transformer option), from
+  [**ComfyUI-H3-NativeAudioLock**](https://github.com/Shrek3OnVH5/MiniMax-H3-NativeAudio-MusicVideo-Workflow)
+  by Shrek3OnVH5.
 
-Those packs are MIT-licensed; this repository is AGPL-3.0, with which the adapted
-code is redistributed here with attribution.
+Those upstream packs are MIT-licensed; the adapted code is redistributed here
+under this repository's AGPL-3.0, with attribution.

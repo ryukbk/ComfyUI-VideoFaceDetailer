@@ -160,6 +160,16 @@ feathered-square blend. Downsampling uses area interpolation (alias-free);
 upscaling uses bicubic. It **errors loudly** if `processed_clip` count ≠ the
 crop's frame count, rather than silently pasting faces onto wrong frames.
 
+### Mask Has Face (bool) — `MaskHasFace`
+`MASK -> (BOOLEAN has_face, INT frames_with_face)`. True if any frame's mask has
+at least `min_pixels` set. Wire `has_face` into a **KJNodes `LazySwitchKJ`** to
+**skip the entire detailer branch when no face is detected**: put the detailer
+output on `on_true` and the original video on `on_false`. Because `LazySwitchKJ`'s
+inputs are lazy, the crop -> upscale -> LTX -> paste chain is *not executed* when
+`has_face` is False (no wasted LTX pass on faceless clips). The example track
+workflow is wired this way. Place `MaskHasFace` on the SAM3 mask **outside** the
+detailer branch (it reads `SAM3_TrackToMask` directly).
+
 ### Face Track Select Run (per-run) — `FaceTrackSelectRun`
 Extracts one contiguous run from a multi-run clip for an independent LTX pass.
 Out-of-range `run_index` yields a harmless 1-frame no-op, so you can safely wire

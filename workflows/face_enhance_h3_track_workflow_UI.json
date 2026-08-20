@@ -510,6 +510,12 @@
             49
           ],
           "slot_index": 6
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 7
         }
       ],
       "properties": {
@@ -518,7 +524,7 @@
       "widgets_values": [
         2.0,
         "width",
-        0.1,
+        10.0,
         0.0,
         0.0,
         0.3,

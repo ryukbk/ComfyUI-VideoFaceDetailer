@@ -425,28 +425,29 @@ class FaceTrackCropAndGate:
                                                        "restored to original size on paste-back. Wire a "
                                                        "FloatConstant here to control it."}),
                 "threshold_type": (["width", "height", "area"], {"default": "width",
-                                    "tooltip": "Which face dimension max_fraction measures: 'width' -> "
-                                               "fraction of frame width; 'height' -> fraction of frame "
-                                               "height; 'area' -> fraction of the whole frame area."}),
-                "max_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
-                                           "tooltip": "Upper bound: enhance a frame ONLY while the face is "
-                                                      "SMALLER than this fraction of the dimension chosen by "
-                                                      "threshold_type (width/height -> that dimension; area -> "
-                                                      "whole-frame area). E.g. 0.12 with threshold_type=area = "
-                                                      "faces under 12% of the frame."}),
-                "min_threshold_fraction": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
-                                             "tooltip": "Lower bound, as a FRACTION in the same measure as "
-                                                        "threshold_type (width/height -> fraction of that dimension; "
-                                                        "area -> fraction of frame area), matching max_fraction's "
-                                                        "units. Faces SMALLER than this are skipped (too tiny to "
-                                                        "resample usefully). 0 = no lower bound. Enhancement runs "
-                                                        "only when min < measure < max."}),
-                "hysteresis": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.5, "step": 0.005,
-                                         "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
-                                                    "the chosen measure (fraction of width/height, or fraction of "
-                                                    "area where 0.02 = 2% of frame area). Stops on/off flicker when "
-                                                    "the face hovers at the boundary. ON below (threshold - "
-                                                    "hysteresis), OFF at/above (threshold + hysteresis)."}),
+                                    "tooltip": "Which face dimension the percentages below measure: 'width' -> "
+                                               "percent of frame width; 'height' -> percent of frame "
+                                               "height; 'area' -> percent of the whole frame area."}),
+                "max_threshold_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 0.01,
+                                           "tooltip": "Upper bound, as a PERCENT (same unit as the size report): "
+                                                      "enhance a frame ONLY while the face is SMALLER than this "
+                                                      "percent of the dimension chosen by threshold_type "
+                                                      "(width/height -> that dimension; area -> whole-frame area). "
+                                                      "E.g. 12 with threshold_type=area = faces under 12% of the "
+                                                      "frame. Read the node's `report` and set this just above the "
+                                                      "largest face you want enhanced."}),
+                "min_threshold_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.01,
+                                             "tooltip": "Lower bound, as a PERCENT in the same measure as "
+                                                        "threshold_type (matching max_threshold_percent's units). "
+                                                        "Faces SMALLER than this are skipped (too tiny to resample "
+                                                        "usefully). 0 = no lower bound. Enhancement runs only when "
+                                                        "min < measure < max. Set just below the smallest face in "
+                                                        "the `report`."}),
+                "hysteresis_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 50.0, "step": 0.01,
+                                         "tooltip": "Dead-band around the thresholds, as a PERCENT (same unit as "
+                                                    "max/min_threshold_percent). Stops on/off flicker when the "
+                                                    "face hovers at the boundary. ON below (max - hysteresis), "
+                                                    "OFF at/above (max + hysteresis)."}),
                 "padding": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "smooth_alpha": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01,
                                            "tooltip": "Crop CENTER smoothing (EMA). 1.0 = follow the face exactly "
@@ -478,9 +479,9 @@ class FaceTrackCropAndGate:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT", "INT", "BOOLEAN")
+    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT", "INT", "BOOLEAN", "STRING")
     RETURN_NAMES = ("face_clip", "track_data", "target_size", "enhanced_frames",
-                    "num_runs", "frame_count", "enhanced")
+                    "num_runs", "frame_count", "enhanced", "report")
     FUNCTION = "crop"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("Per-frame size-gated crop clip for a tracked face: only "
@@ -488,9 +489,9 @@ class FaceTrackCropAndGate:
                    "larger (zoomed-in) frames are left untouched. "
                    "target_size = native window * upscale_ratio.")
 
-    def crop(self, images, mask_track, upscale_ratio, threshold_type, max_fraction,
-             hysteresis, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
-             min_threshold_fraction=0.0, resampler="ltx"):
+    def crop(self, images, mask_track, upscale_ratio, threshold_type, max_threshold_percent,
+             hysteresis_percent, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
+             min_threshold_percent=0.0, resampler="ltx"):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -502,10 +503,12 @@ class FaceTrackCropAndGate:
         #   width  : face_bbox_width  / frame_width
         #   height : face_bbox_height / frame_height
         #   area   : (face_bbox_w * face_bbox_h) / (frame_w * frame_h)
-        # max_fraction is the upper bound; threshold_type only selects which
-        # per-frame measure (m, below) it is compared against.
-        thr = float(max_fraction)
-        thr_min = max(0.0, float(min_threshold_fraction))  # lower bound (0 = off)
+        # Inputs are PERCENTS (0-100, same unit as the size report); convert to
+        # fractions (0-1) here since the per-frame measure m (below) is a fraction.
+        # threshold_type only selects which measure m the upper bound is compared to.
+        thr = float(max_threshold_percent) / 100.0            # upper bound (fraction)
+        thr_min = max(0.0, float(min_threshold_percent) / 100.0)  # lower bound (0 = off)
+        hysteresis = float(hysteresis_percent) / 100.0        # dead-band (fraction)
         # Upper-bound dead-band (existing behavior).
         on_thresh = thr - hysteresis    # must be below this to (re)enable
         off_thresh = thr + hysteresis   # at/above this -> disable
@@ -531,6 +534,42 @@ class FaceTrackCropAndGate:
             else:
                 m = fw / W
             measures.append(m)
+
+        # ── Observed face-size range across present frames, in ALL THREE measures.
+        # This is a decision aid: run once, read the min–max for width/height/area,
+        # then pick max_threshold_fraction / min_threshold_fraction from real data.
+        w_fracs, h_fracs, a_fracs = [], [], []
+        for info in boxes:
+            if info is None:
+                continue
+            fw = info[2] - info[0] + 1
+            fh = info[3] - info[1] + 1
+            w_fracs.append(fw / W)
+            h_fracs.append(fh / H)
+            a_fracs.append((fw * fh) / float(W * H))
+
+        def _rng(vals):
+            return (min(vals), max(vals)) if vals else (0.0, 0.0)
+        wlo, whi = _rng(w_fracs)
+        hlo, hhi = _rng(h_fracs)
+        alo, ahi = _rng(a_fracs)
+        n_present = len(w_fracs)
+        size_report = (
+            f"faces on {n_present}/{N} frames — percent min–max: "
+            f"width {wlo * 100:.1f}–{whi * 100:.1f}%, "
+            f"height {hlo * 100:.1f}–{hhi * 100:.1f}%, "
+            f"area {alo * 100:.2f}–{ahi * 100:.2f}%"
+        )
+        print(f"[FaceTrackCropAndGate] {size_report}. These are PERCENTS — set "
+              f"max_threshold_percent just ABOVE the largest face you want "
+              f"enhanced, and min_threshold_percent just BELOW the smallest, in "
+              f"the threshold_type={threshold_type} column.")
+
+        def _make_report(n_enh):
+            return (size_report + f" | threshold_type={threshold_type}, "
+                    f"max_threshold_percent={thr * 100:.2f}%, "
+                    f"min_threshold_percent={thr_min * 100:.2f}% -> "
+                    f"{n_enh} frame(s) enhanced")
 
         # Per-frame enhance decision with hysteresis. Absent frames are never
         # enhanced and do not change the on/off state (we hold it across gaps).
@@ -610,7 +649,7 @@ class FaceTrackCropAndGate:
             # so the whole enhance branch (Resize/H3/sampler) is SKIPPED — the dummy
             # never reaches a resize node (which would collapse to 0 under
             # divisible_by) and the original video passes through on_false.
-            return (dummy, data, target_size, 0, 0, dummy_len, False)
+            return (dummy, data, target_size, 0, 0, dummy_len, False, _make_report(0))
 
         # ── Crop each enhanced frame TIGHT to its own face bbox + padding ──────
         # Earlier versions used one constant SQUARE window sized to the max face
@@ -773,7 +812,8 @@ class FaceTrackCropAndGate:
         # frame_count = the (padded) clip length; feed the resampler's `length`
         # from this directly instead of a separate GetImageSizeAndCount node.
         # enhanced = True: >=1 frame qualified, so the enhance branch should run.
-        return (face_clip, data, target_size, n_real, n_runs, target_len, n_real > 0)
+        return (face_clip, data, target_size, n_real, n_runs, target_len,
+                n_real > 0, _make_report(n_real))
 
 
 class FaceTrackSelectRun:

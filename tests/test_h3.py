@@ -21,10 +21,10 @@ for i in range(N):
     mt[i, cy - 10:cy + 10, cx - 10:cx + 10] = 1.0
 
 crop = FaceTrackCropAndGate()
-face_clip, data, target_size, n_real, n_runs, frame_count, enhanced = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
-    hysteresis=0.02, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_fraction=0.0, resampler="minimax_h3")
+face_clip, data, target_size, n_real, n_runs, frame_count, enhanced, report = crop.crop(
+    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
+    hysteresis_percent=2.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
+    size_smooth_alpha=0.4, min_threshold_percent=0.0, resampler="minimax_h3")
 
 clip_len = face_clip.shape[0]
 check("h3: clip padded onto 17k+5 grid", clip_len == _next_valid_clip_len(n_real, "minimax_h3") and (clip_len - 5) % 17 == 0)
@@ -35,24 +35,28 @@ check("h3: present entries carry face_px", len(present) == n_real and all(e.get(
 check("h3: entries count == clip length (paste 1:1)", len(data["entries"]) == clip_len)
 
 # default resampler stays LTX (backward compatible)
-_, data_ltx, _, nr2, _, fc_ltx, enh_ltx = crop.crop(
-    imgs, mt, 2.0, "width", 0.10, 0.02, 0.3, 1.0)
+_, data_ltx, _, nr2, _, fc_ltx, enh_ltx, _ = crop.crop(
+    imgs, mt, 2.0, "width", 10.0, 2.0, 0.3, 1.0)
 check("default resampler is ltx", data_ltx.get("resampler") == "ltx" and (data_ltx["clip_length"] - 1) % 8 == 0)
 # frame_count output == the padded clip length (drives the resampler `length` directly)
 check("frame_count == clip length", frame_count == face_clip.shape[0] == data["clip_length"]
       and fc_ltx == data_ltx["clip_length"])
 # enhanced BOOLEAN drives LazySwitchKJ: True when >=1 frame qualified.
 check("enhanced=True when frames qualify", enhanced is True and n_real > 0)
+# report STRING gives width/height/area fraction ranges to help pick thresholds.
+check("report lists width/height/area ranges",
+      isinstance(report, str) and all(k in report for k in ("width", "height", "area"))
+      and "min–max" in report and "enhanced" in report)
 
 # ── 0 frames qualify -> graceful no-op dummy clip (must NOT raise) ───────────
 # (a) large face only: every face is ABOVE the width threshold.
 big = torch.zeros(N, H, W)
 for i in range(N):
     big[i, 40:160, 100:300] = 1.0  # 200px face = 50% of width, well above 10%
-noop_clip, noop_data, noop_size, noop_real, noop_runs, noop_fc, noop_enh = crop.crop(
-    imgs, big, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
-    hysteresis=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_fraction=0.0, resampler="minimax_h3")
+noop_clip, noop_data, noop_size, noop_real, noop_runs, noop_fc, noop_enh, noop_rep = crop.crop(
+    imgs, big, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
+    hysteresis_percent=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
+    size_smooth_alpha=0.4, min_threshold_percent=0.0, resampler="minimax_h3")
 check("no-op: 0 real frames, does not raise", noop_real == 0 and noop_runs == 0)
 # enhanced=False -> LazySwitchKJ skips the branch, so the dummy never hits Resize.
 check("no-op: enhanced=False (switch skips branch)", noop_enh is False)
@@ -63,10 +67,10 @@ check("no-op: frame_count == dummy clip length (>0)", noop_fc == noop_clip.shape
 check("no-op: dummy clip on h3 grid", (noop_clip.shape[0] - 5) % 17 == 0 and noop_clip.shape[0] >= 5)
 check("no-op: all entries present=False", all(not e.get("present") for e in noop_data["entries"]))
 # (b) empty enable window: min_threshold == threshold (the reported bug config).
-_, ew_data, _, ew_real, _, _, ew_enh = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_fraction=0.10,
-    hysteresis=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_fraction=0.10, resampler="minimax_h3")
+_, ew_data, _, ew_real, _, _, ew_enh, _ = crop.crop(
+    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
+    hysteresis_percent=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
+    size_smooth_alpha=0.4, min_threshold_percent=10.0, resampler="minimax_h3")
 check("no-op: empty enable window (min==max) yields 0 real, no raise", ew_real == 0 and ew_enh is False)
 # paste-back on a no-op clip is a true passthrough (original unchanged).
 paste_noop = FaceTrackPasteBack()

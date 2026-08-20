@@ -47,7 +47,7 @@ VHS_LoadVideo ── images ──┐             │                           
                           │                                                                  │
                           ▼                                                                  │
    Face Track Crop & Gate (coherent)                                                         │
-     • keeps only frames where the face < max_fraction (of width/height/area)                 │
+     • keeps only frames where the face < max_threshold_percent (of width/height/area)                 │
      • crops each kept frame, smoothed in position AND size (no wobble)                      │
      • outputs face_clip + target_size (= crop size × upscale_ratio) + num_runs              │
                           │                                                                  │
@@ -140,10 +140,10 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `images` | IMAGE | — | the video frames |
 | `mask_track` | MASK | — | per-frame mask of **one** tracked face (from `SAM3_TrackToMask`) |
 | `upscale_ratio` | FLOAT | 2.0 | crop is upscaled by this for resampling; `target_size = crop_size × ratio`. Paste-back undoes it exactly. |
-| `threshold_type` | choice | width | which face dimension `max_fraction` measures: **width**, **height**, or **area** |
-| `max_fraction` | FLOAT | 0.10 | **upper bound** — enhance a frame **only while** the face is *smaller* than this fraction of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. 0.12 = faces under 12% of the frame) |
-| `min_threshold_fraction` | FLOAT | 0.0 | **lower bound**, as a **fraction** in the same measure as `threshold_type` (matching `max_fraction`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_fraction` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
-| `hysteresis` | FLOAT | 0.0 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
+| `threshold_type` | choice | width | which face dimension `max_threshold_percent` measures: **width**, **height**, or **area** |
+| `max_threshold_percent` | FLOAT | 10.0 | **upper bound**, as a **percent** (same unit as the `report`) — enhance a frame **only while** the face is *smaller* than this percent of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. `12` = faces under 12% of the frame). Fine grain (`0.01`) so tiny area values like `1.38%` are settable. |
+| `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a **percent** in the same measure as `threshold_type` (matching `max_threshold_percent`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_threshold_percent` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
+| `hysteresis_percent` | FLOAT | 0.0 | dead-band around **both** thresholds, as a **percent** (same unit as the thresholds), to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
@@ -157,7 +157,17 @@ straight into `MiniMaxH3ReferenceToVideo.length` / `LTXVImgToVideo.length`
 instead of a separate `GetImageSizeAndCount` node), `enhanced` (BOOLEAN — True iff
 ≥1 frame qualified; wire into `LazySwitchKJ.switch` so the enhance branch is
 skipped when nothing qualifies. This is the recommended gate — it supersedes
-`MaskHasFace`, since "no face" is just one way to get 0 qualifying frames).
+`MaskHasFace`, since "no face" is just one way to get 0 qualifying frames),
+`report` (STRING).
+
+**Picking thresholds from your footage:** run the workflow once and read the
+`report` output (also printed to the console). It shows, over the frames that
+have a face, the **min–max face fraction in all three measures** — e.g.
+`faces on 118/124 frames — percent min–max: width 9.1–26.8%, height 12.0–34.5%,
+area 1.10–9.20%`. Set `max_threshold_percent` just **above** the largest face
+you still want enhanced and `min_threshold_percent` just **below** the smallest,
+reading the column for your chosen `threshold_type`. Wire `report` into a
+text-preview node (e.g. KJNodes' "Display Any") to keep it on screen.
 
 > **Anti-wobble tip:** for a steady face that the mask jitters on, use
 > `smooth_alpha = 1.0` (exact position) and lower `size_smooth_alpha`
@@ -418,13 +428,13 @@ Extra branches are safe no-ops.
   enhancement` in the console** → the gate found **no frame inside the enable
   window**, so it emits a **no-op passthrough** (original video preserved) rather
   than crashing. The warning states the cause. Common ones: no face was small
-  enough (raise `max_*_fraction`), `min_threshold_fraction ≥ max_*_fraction` so
-  the window is empty (lower `min_threshold_fraction`, usually back to `0`),
-  `hysteresis` too wide, or the SAM3 track was empty (check `object_indices`).
+  enough (raise `max_threshold_percent`), `min_threshold_percent ≥ max_threshold_percent`
+  so the window is empty (lower `min_threshold_percent`, usually back to `0`),
+  `hysteresis_percent` too wide, or the SAM3 track was empty (check `object_indices`).
   Note: because the gate runs eagerly upstream, a downstream `LazySwitchKJ`
   cannot skip it — this graceful no-op is what makes the skip-when-no-face case
   work end to end. `threshold_type` only selects which dimension the single
-  `max_fraction` measures (width/height/area).
+  `max_threshold_percent` measures (width/height/area).
 - **`ValueError: height and width must be > 0` at the Resize (ImageResizeKJv2)
   node** → this happened in older graphs when 0 frames qualified: the gate emitted
   a tiny no-op dummy that Resize's `divisible_by` (e.g. 32) rounded down to 0

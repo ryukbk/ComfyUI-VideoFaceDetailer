@@ -414,7 +414,7 @@ class FaceTrackCropAndGate:
                                                         "-> % of frame area). Faces SMALLER than this are skipped "
                                                         "(too tiny to resample usefully). 0 = no lower bound. "
                                                         "Enhancement runs only when min < measure < max."}),
-                "hysteresis": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.5, "step": 0.005,
+                "hysteresis": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.5, "step": 0.005,
                                          "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
                                                     "the chosen measure (fraction of width/height, or fraction of "
                                                     "area where 0.02 = 2% of frame area). Stops on/off flicker when "
@@ -933,6 +933,46 @@ class FaceTrackPasteBack:
         return (out,)
 
 
+class MaskHasFace:
+    """MASK -> BOOLEAN: True if any frame's mask has a face region.
+
+    Drives a LazySwitchKJ so the whole crop -> upscale -> LTX -> paste branch is
+    skipped (never executed) when SAM3 tracked nothing. Must sit OUTSIDE the
+    gated branch (it reads the SAM3 mask directly, not the crop output).
+
+    `min_pixels` guards against a few stray mask pixels counting as a face.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "masks": ("MASK",),
+                "min_pixels": ("INT", {"default": 1, "min": 1, "max": 1_000_000, "step": 1,
+                                       "tooltip": "A frame counts as having a face only if its mask has at "
+                                                  "least this many set pixels (guards against stray specks)."}),
+            },
+        }
+
+    RETURN_TYPES = ("BOOLEAN", "INT")
+    RETURN_NAMES = ("has_face", "frames_with_face")
+    FUNCTION = "check"
+    CATEGORY = "masking/face_gate"
+    DESCRIPTION = ("True if any frame's mask contains a face (>= min_pixels set). "
+                   "Wire into LazySwitchKJ.switch to skip the detailer branch "
+                   "when no face is detected.")
+
+    def check(self, masks, min_pixels=1):
+        import torch
+        m = masks
+        if m.dim() == 2:
+            m = m.unsqueeze(0)
+        per_frame = (m > 0.5).flatten(1).sum(dim=1)   # set-pixels per frame
+        frames = int((per_frame >= min_pixels).sum().item())
+        has = frames > 0
+        print(f"[MaskHasFace] frames_with_face={frames}/{m.shape[0]} -> has_face={has}")
+        return (has, frames)
+
+
 NODE_CLASS_MAPPINGS = {
     "FaceSizeGateMask": FaceSizeGateMask,
     "FaceCropAndGate": FaceCropAndGate,
@@ -941,6 +981,7 @@ NODE_CLASS_MAPPINGS = {
     "FaceTrackSelectRun": FaceTrackSelectRun,
     "FaceTrackRunCount": FaceTrackRunCount,
     "FaceTrackPasteBack": FaceTrackPasteBack,
+    "MaskHasFace": MaskHasFace,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FaceSizeGateMask": "Face Size Gate (Mask)",
@@ -950,4 +991,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FaceTrackSelectRun": "Face Track Select Run (per-run)",
     "FaceTrackRunCount": "Face Track Run Count",
     "FaceTrackPasteBack": "Face Track Paste Back (coherent)",
+    "MaskHasFace": "Mask Has Face (bool)",
 }

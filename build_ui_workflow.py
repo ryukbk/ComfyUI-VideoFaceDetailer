@@ -101,6 +101,15 @@ SPEC = {
         "inputs": [("mask", "MASK")],
         "outputs": [("mask", "MASK"), ("width", "INT"), ("height", "INT"), ("count", "INT")],
     },
+    "MaskHasFace": {
+        "inputs": [("masks", "MASK")],
+        "outputs": [("has_face", "BOOLEAN"), ("frames_with_face", "INT")],
+    },
+    "LazySwitchKJ": {
+        # on_true / on_false are lazy: the unchosen branch is never executed.
+        "inputs": [("switch", "BOOLEAN"), ("on_false", "*"), ("on_true", "*")],
+        "outputs": [("*", "*")],
+    },
     "LTXVConditioning": {
         # frame_rate converted from widget -> input so it can be driven by source_fps.
         "inputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING"), ("frame_rate", "FLOAT")],
@@ -164,17 +173,24 @@ NODES_TRACK = {
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
     "20": ("FaceTrackPasteBack", [0.15, "mask", True],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
+    # "Was a face detected?" — computed from the SAM3 mask OUTSIDE the detailer
+    # branch, so it can gate that branch.
+    "25": ("MaskHasFace", [1], {"masks": ("5", 0)}),
+    # LazySwitchKJ: on_true = the detailer output (node 20), on_false = original
+    # video (node 1). Because on_true is LAZY, when has_face is False the entire
+    # crop -> upscale -> LTX -> paste chain (nodes 7,8,13,15,16,20) is NOT executed.
+    "26": ("LazySwitchKJ", [], {"switch": ("25", 0), "on_false": ("1", 0), "on_true": ("20", 0)}),
     # frame_rate is now an input (driven by source_fps); remaining widgets: loop_count,
     # filename_prefix, format, pingpong, save_output.
     "21": ("VHS_VideoCombine", [0, "face_enhanced_track", "video/h264-mp4", False, True],
-           {"images": ("20", 0), "frame_rate": ("22", 0)}),
+           {"images": ("26", 0), "frame_rate": ("22", 0)}),
 }
 
 LAYOUT_TRACK = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
                 "24": (3, 1), "22": (1, 0), "9": (3, 3), "7": (4, 0),
                 "8": (5, 0), "23": (5, 1), "10": (4, 3), "11": (5, 3), "12": (5, 4),
                 "13": (6, 0), "14": (7, 0), "15": (8, 0), "16": (9, 0), "20": (10, 0),
-                "21": (11, 0)}
+                "25": (10, 2), "26": (11, 1), "21": (12, 0)}
 
 # ── Graph B: per-frame, per-face variant ──
 NODES_PERFACE = {

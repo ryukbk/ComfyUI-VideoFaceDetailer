@@ -89,7 +89,7 @@ in ComfyUI). The **example workflows** additionally require:
 |---|---|
 | Native **SAM 3 / 3.1** nodes (bundled with recent ComfyUI) | `SAM3_VideoTrack`, `SAM3_TrackToMask`, `SAM3_TrackPreview` |
 | Native **LTXV** nodes (bundled with ComfyUI) | the video resample pass |
-| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `GetImageSizeAndCount`, `GetMaskSizeAndCount` |
+| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `GetImageSizeAndCount`, `GetMaskSizeAndCount`, `LazySwitchKJ` |
 | [**ComfyUI-VideoHelperSuite**](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) | `VHS_LoadVideo`, `VHS_VideoCombine`, `VHS_VideoInfo` |
 
 You also need a SAM 3 / 3.1 checkpoint and an LTXV checkpoint placed in the usual
@@ -129,7 +129,7 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `max_height_fraction` | FLOAT | 0.10 | *(threshold_type=height)* enhance **only while** the face is shorter than this fraction of the frame **height** |
 | `max_area_percent` | FLOAT | 10.0 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **percent of the whole frame area** (e.g. 12.1 = faces smaller than 12.1% of the frame) |
 | `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a percent in the same measure as `threshold_type`. Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. |
-| `hysteresis` | FLOAT | 0.02 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom |
+| `hysteresis` | FLOAT | 0.0 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |

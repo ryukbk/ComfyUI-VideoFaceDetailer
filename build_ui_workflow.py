@@ -37,7 +37,8 @@ SPEC = {
     },
     "SAM3_TrackPreview": {
         # fps converted from widget -> input so it can be driven by source_fps.
-        "inputs": [("track_data", "SAM3_TRACK_DATA"), ("images", "IMAGE"), ("fps", "FLOAT")],
+        # widget order: opacity, fps. fps is converted to an input (source_fps).
+        "inputs": [("track_data", "SAM3_TRACK_DATA"), ("images", "IMAGE"), ("fps", "FLOAT", "widget")],
         "outputs": [],  # output node: renders a video preview, no tensor output
     },
     "VHS_VideoInfo": {
@@ -70,7 +71,8 @@ SPEC = {
         # directly on the node and target_size updates immediately.
         "inputs": [("images", "IMAGE"), ("mask_track", "MASK")],
         "outputs": [("face_clip", "IMAGE"), ("track_data", "FACE_TRACK_DATA"),
-                    ("target_size", "INT"), ("enhanced_frames", "INT"), ("num_runs", "INT")],
+                    ("target_size", "INT"), ("enhanced_frames", "INT"), ("num_runs", "INT"),
+                    ("frame_count", "INT"), ("enhanced", "BOOLEAN")],
     },
     "FaceTrackSelectRun": {
         "inputs": [("face_clip", "IMAGE"), ("track_data", "FACE_TRACK_DATA")],
@@ -82,14 +84,21 @@ SPEC = {
         "outputs": [("num_runs", "INT"), ("enhanced_frames", "INT")],
     },
     "ImageResizeKJv2": {
-        "inputs": [("image", "IMAGE"), ("width", "INT"), ("height", "INT")],
+        # width/height are widgets converted to inputs -> mark them (widget property)
+        # so widgets_values stays aligned. Widget order (KJNodes latest):
+        # width, height, upscale_method, keep_proportion, pad_color, crop_position,
+        # divisible_by, device.
+        "inputs": [("image", "IMAGE"), ("width", "INT", "widget"), ("height", "INT", "widget")],
         "outputs": [("IMAGE", "IMAGE"), ("width", "INT"), ("height", "INT"), ("mask", "MASK")],
     },
     "LTXVImgToVideo": {
-        # length converted from widget -> input so it can be driven by frame count.
+        # widget order: width, height, length, batch_size, strength. width/height/
+        # length are converted to inputs -> mark them so widgets_values stays aligned
+        # (otherwise 'strength' silently falls back to its default 1.0).
         "inputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING"),
-                   ("vae", "VAE"), ("image", "IMAGE"), ("width", "INT"), ("height", "INT"),
-                   ("length", "INT")],
+                   ("vae", "VAE"), ("image", "IMAGE"),
+                   ("width", "INT", "widget"), ("height", "INT", "widget"),
+                   ("length", "INT", "widget")],
         "outputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING"), ("latent", "LATENT")],
     },
     "GetImageSizeAndCount": {
@@ -107,12 +116,12 @@ SPEC = {
     },
     "LazySwitchKJ": {
         # on_true / on_false are lazy: the unchosen branch is never executed.
-        "inputs": [("switch", "BOOLEAN"), ("on_false", "*"), ("on_true", "*")],
+        "inputs": [("switch", "BOOLEAN", "widget"), ("on_false", "*"), ("on_true", "*")],
         "outputs": [("*", "*")],
     },
     "LTXVConditioning": {
         # frame_rate converted from widget -> input so it can be driven by source_fps.
-        "inputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING"), ("frame_rate", "FLOAT")],
+        "inputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING"), ("frame_rate", "FLOAT", "widget")],
         "outputs": [("positive", "CONDITIONING"), ("negative", "CONDITIONING")],
     },
     "KSampler": {
@@ -130,9 +139,11 @@ SPEC = {
         "outputs": [("IMAGE", "IMAGE")],
     },
     "VHS_VideoCombine": {
-        # frame_rate converted from widget -> input so it can be driven by source_fps.
-        # audio (optional) lets the ORIGINAL track be muxed onto the saved video.
-        "inputs": [("images", "IMAGE"), ("frame_rate", "FLOAT"), ("audio", "AUDIO")],
+        # VHS stores widgets_values as a DICT (keyed by widget name), not a list —
+        # a list makes the node render red. frame_rate is a widget converted to an
+        # input (marked "widget" so it's link-driven by source_fps and not red);
+        # audio (optional) muxes the ORIGINAL track onto the saved video.
+        "inputs": [("images", "IMAGE"), ("frame_rate", "FLOAT", "widget"), ("audio", "AUDIO")],
         "outputs": [("Filenames", "VHS_FILENAMES")],
     },
     # ── MiniMax H3 resampler stage (see NODES_H3) ──
@@ -166,21 +177,26 @@ SPEC = {
         # ref_images/ref_audios are autogrow input slots (names mirror ComfyUI).
         "inputs": [("clip", "CLIP"), ("vae", "VAE"), ("audio_vae", "VAE"),
                    ("ref_images.ref_image_0", "IMAGE"), ("ref_audios.ref_audio_0", "AUDIO"),
-                   ("width", "INT"), ("height", "INT"), ("length", "INT")],
+                   # width/height/length are widgets converted to inputs -> mark them
+                   # so ComfyUI links slot<->widget (and widgets_values stays aligned).
+                   ("width", "INT", "widget"), ("height", "INT", "widget"),
+                   ("length", "INT", "widget")],
         "outputs": [("positive", "CONDITIONING"), ("LATENT", "LATENT")],
     },
-    "H3InjectVideoLatent": {
-        "inputs": [("av_latent", "LATENT"), ("images", "IMAGE"), ("vae", "VAE")],
-        "outputs": [("av_latent", "LATENT"), ("report", "STRING")],
-    },
-    "MiniMaxH3NativeAudioLock": {
-        "inputs": [("model", "MODEL"), ("av_latent", "LATENT"),
+    "H3FaceRefine": {
+        # one node: img2img inject + audio lipsync + per-frame denoise. audio_vae/
+        # audio are optional inputs (appended after the required connection slots).
+        "inputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("images", "IMAGE"),
+                   ("vae", "VAE"), ("track_data", "FACE_TRACK_DATA"),
                    ("audio_vae", "VAE"), ("audio", "AUDIO")],
-        "outputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("exact_audio", "AUDIO")],
+        "outputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("report", "STRING")],
     },
-    "H3PerFrameDenoise": {
-        "inputs": [("av_latent", "LATENT"), ("track_data", "FACE_TRACK_DATA")],
-        "outputs": [("av_latent", "LATENT"), ("report", "STRING")],
+    "FaceTrackAudioSlice": {
+        # widget order: source_fps, target_fps. source_fps converted to input
+        # (driven by VHS_VideoInfo source_fps) -> mark it.
+        "inputs": [("audio", "AUDIO"), ("track_data", "FACE_TRACK_DATA"),
+                   ("source_fps", "FLOAT", "widget")],
+        "outputs": [("audio", "AUDIO"), ("report", "STRING")],
     },
     "BasicScheduler": {
         "inputs": [("model", "MODEL")],
@@ -189,6 +205,12 @@ SPEC = {
     "BasicGuider": {
         "inputs": [("model", "MODEL"), ("conditioning", "CONDITIONING")],
         "outputs": [("GUIDER", "GUIDER")],
+    },
+    "ModelAttentionBackend": {
+        # model/patch: swaps the attention backend on a cloned model. Sits between
+        # the loader/refine node and the sampler.
+        "inputs": [("model", "MODEL")],
+        "outputs": [("MODEL", "MODEL")],
     },
     "KSamplerSelect": {
         "inputs": [],
@@ -204,6 +226,16 @@ SPEC = {
         "outputs": [("output", "LATENT"), ("denoised_output", "LATENT")],
     },
 }
+
+def vhs_combine(filename_prefix):
+    """VHS_VideoCombine widgets as the DICT format VHS expects (a positional list
+    renders the node red). frame_rate is a placeholder — it's driven by the
+    source_fps link at runtime."""
+    return {"frame_rate": 30, "loop_count": 0, "filename_prefix": filename_prefix,
+            "format": "video/h264-mp4", "pix_fmt": "yuv420p", "crf": 19,
+            "save_metadata": True, "trim_to_audio": False, "pingpong": False,
+            "save_output": True, "videopreview": ""}
+
 
 # ── Graph A: temporally-coherent track variant ──
 # Declarative node list. key -> (type, widgets_values, conn)
@@ -221,10 +253,10 @@ NODES_TRACK = {
     # Video Info -> source_fps drives all frame-rate fields below.
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     # fps is now an input (driven by source_fps); no fps widget value remains.
-    "9":  ("SAM3_TrackPreview", [0.5], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 0.10, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
-    "8":  ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
+    "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
     # Count the upscaled face-clip frames; drives LTX length so it matches exactly.
     "23": ("GetImageSizeAndCount", [], {"image": ("8", 0)}),
@@ -232,26 +264,27 @@ NODES_TRACK = {
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
     "12": ("CLIPTextEncode", ["blurry, low quality, distorted, deformed, flicker"], {"clip": ("10", 1)}),
     # length is now an input (driven by frame count); remaining widgets: batch_size, strength.
-    "13": ("LTXVImgToVideo", [1, 0.4],
+    "13": ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
            {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2),
             "image": ("8", 0), "width": ("7", 2), "height": ("7", 2), "length": ("23", 3)}),
     # frame_rate is now an input (driven by source_fps); no frame_rate widget value remains.
-    "14": ("LTXVConditioning", [], {"positive": ("13", 0), "negative": ("13", 1), "frame_rate": ("22", 0)}),
+    "14": ("LTXVConditioning", [25.0], {"positive": ("13", 0), "negative": ("13", 1), "frame_rate": ("22", 0)}),
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
            {"model": ("10", 0), "positive": ("14", 0), "negative": ("14", 1), "latent_image": ("13", 2)}),
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
     "20": ("FaceTrackPasteBack", [0.15, "mask", True],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
-    # "Was a face detected?" — computed from the SAM3 mask OUTSIDE the detailer
-    # branch, so it can gate that branch.
-    "25": ("MaskHasFace", [1], {"masks": ("5", 0)}),
     # LazySwitchKJ: on_true = the detailer output (node 20), on_false = original
-    # video (node 1). Because on_true is LAZY, when has_face is False the entire
-    # crop -> upscale -> LTX -> paste chain (nodes 7,8,13,15,16,20) is NOT executed.
-    "26": ("LazySwitchKJ", [], {"switch": ("25", 0), "on_false": ("1", 0), "on_true": ("20", 0)}),
+    # video (node 1). The switch is driven by FaceTrackCropAndGate's `enhanced`
+    # BOOLEAN (True iff >=1 frame qualified). The gate itself runs eagerly (it
+    # drives the switch), but because on_true is LAZY, when `enhanced` is False the
+    # rest of the branch (upscale -> LTX -> paste, nodes 8,13,15,16,20) is NOT
+    # executed — so the no-op dummy never reaches Resize, and the original video
+    # passes through. This also covers the no-face case (0 frames -> enhanced=False).
+    "26": ("LazySwitchKJ", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
     # frame_rate is now an input (driven by source_fps); remaining widgets: loop_count,
     # filename_prefix, format, pingpong, save_output.
-    "21": ("VHS_VideoCombine", [0, "face_enhanced_track", "video/h264-mp4", False, True],
+    "21": ("VHS_VideoCombine", vhs_combine("face_enhanced_track"),
            {"images": ("26", 0), "frame_rate": ("22", 0)}),
 }
 
@@ -259,7 +292,7 @@ LAYOUT_TRACK = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
                 "24": (3, 1), "22": (1, 0), "9": (3, 3), "7": (4, 0),
                 "8": (5, 0), "23": (5, 1), "10": (4, 3), "11": (5, 3), "12": (5, 4),
                 "13": (6, 0), "14": (7, 0), "15": (8, 0), "16": (9, 0), "20": (10, 0),
-                "25": (10, 2), "26": (11, 1), "21": (12, 0)}
+                "26": (11, 1), "21": (12, 0)}
 
 # ── Graph B: per-frame, per-face variant ──
 NODES_PERFACE = {
@@ -270,7 +303,7 @@ NODES_PERFACE = {
            {"model": ("2", 0), "image": ("1", 0), "conditioning": ("3", 0)}),
     "5":  ("FaceCropAndGate", [0.10, "bbox_width", 0.3, 512, 8],
            {"images": ("1", 0), "masks": ("4", 0)}),
-    "6":  ("ImageResizeKJv2", [1024, 1024, "lanczos", "stretch", "0, 0, 0", "center", 32],
+    "6":  ("ImageResizeKJv2", [1024, 1024, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("5", 0)}),
     # Count the upscaled face frames; drives LTX length so it matches the crop batch.
     "23": ("GetImageSizeAndCount", [], {"image": ("6", 0)}),
@@ -278,7 +311,7 @@ NODES_PERFACE = {
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face"], {"clip": ("10", 1)}),
     "12": ("CLIPTextEncode", ["blurry, low quality, distorted, deformed"], {"clip": ("10", 1)}),
     # width/height/length all inputs now: width/height from resize outputs, length from count.
-    "13": ("LTXVImgToVideo", [1, 0.4],
+    "13": ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
            {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2), "image": ("6", 0),
             "width": ("6", 1), "height": ("6", 2), "length": ("23", 3)}),
     "14": ("LTXVConditioning", [25.0], {"positive": ("13", 0), "negative": ("13", 1)}),
@@ -287,11 +320,11 @@ NODES_PERFACE = {
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
     "20": ("FacePasteBack", [0.15],
            {"original_images": ("1", 0), "processed_faces": ("16", 0), "face_data": ("5", 1)}),
-    "21": ("VHS_VideoCombine", [0, "face_enhanced", "video/h264-mp4", False, True],
+    "21": ("VHS_VideoCombine", vhs_combine("face_enhanced"),
            {"images": ("20", 0), "frame_rate": ("22", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
 }
-NODES_PERFACE["14"] = ("LTXVConditioning", [],
+NODES_PERFACE["14"] = ("LTXVConditioning", [25.0],
                        {"positive": ("13", 0), "negative": ("13", 1), "frame_rate": ("22", 0)})
 LAYOUT_PERFACE = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
                   "22": (1, 0), "6": (4, 0), "23": (4, 1), "10": (3, 3), "11": (4, 3),
@@ -299,7 +332,7 @@ LAYOUT_PERFACE = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0
                   "20": (9, 0), "21": (10, 0)}
 
 
-def build(node_dict, layout, out_path):
+def build(node_dict, layout, out_path, groups=None):
     def pos(key):
         cx, cy = layout.get(key, (0, 0))
         return [cx * 360, cy * 220]
@@ -310,7 +343,18 @@ def build(node_dict, layout, out_path):
     for key in order:
         ntype, wv, conn = node_dict[key]
         spec = SPEC[ntype]
-        node_inputs = [{"name": n, "type": t, "link": None} for (n, t) in spec["inputs"]]
+        # An input entry may be (name, type) for a genuine connection, or
+        # (name, type, "widget") for a widget that has been converted to an input.
+        # Converted-widget inputs get a "widget": {"name": …} property — this is how
+        # ComfyUI associates the slot with its widget so the LINK drives the value
+        # AND widgets_values (which must list ALL widgets in order) stays aligned.
+        node_inputs = []
+        for entry in spec["inputs"]:
+            n, t = entry[0], entry[1]
+            slot = {"name": n, "type": t, "link": None}
+            if len(entry) > 2 and entry[2] == "widget":
+                slot["widget"] = {"name": n}
+            node_inputs.append(slot)
         node_outputs = [{"name": n, "type": t, "links": [], "slot_index": i}
                         for i, (n, t) in enumerate(spec["outputs"])]
         nodes.append({
@@ -339,9 +383,25 @@ def build(node_dict, layout, out_path):
             tgt_node["inputs"][tslot]["link"] = link_id
             node_by_id[int(src_key)]["outputs"][src_slot]["links"].append(link_id)
 
+    # Optional group boxes. Each group's bounding is computed to enclose all of its
+    # member node keys (with header + margin), so selecting the group in ComfyUI
+    # selects exactly those nodes — e.g. for "Convert to Subgraph".
+    group_list = []
+    for g in (groups or []):
+        xs, ys = [], []
+        for k in g["keys"]:
+            x, y = pos(k)
+            xs.append(x); ys.append(y)
+        x0, y0 = min(xs) - 30, min(ys) - 70          # header space above
+        x1, y1 = max(xs) + 340, max(ys) + 240        # node ~320x200 + margin
+        group_list.append({
+            "title": g["title"], "bounding": [x0, y0, x1 - x0, y1 - y0],
+            "color": g.get("color", "#3f789e"), "font_size": 24, "flags": {},
+        })
+
     graph = {
         "last_node_id": max(int(k) for k in order), "last_link_id": link_id,
-        "nodes": nodes, "links": links, "groups": [], "config": {}, "extra": {},
+        "nodes": nodes, "links": links, "groups": group_list, "config": {}, "extra": {},
         "version": 0.4,
     }
     with open(out_path, "w") as f:
@@ -362,7 +422,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 0.10, 0.10, 0.10, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -374,13 +434,13 @@ def _branch_numeric(base, run_index, prev_paste_ref):
     sel, rsz, cnt, i2v, cond, ks, dec, pst = (str(base+i) for i in range(8))
     frag = {
         sel: ("FaceTrackSelectRun", [run_index], {"face_clip": ("7", 0), "track_data": ("7", 1)}),
-        rsz: ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
+        rsz: ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
               {"image": (sel, 0), "width": (sel, 2), "height": (sel, 2)}),
         cnt: ("GetImageSizeAndCount", [], {"image": (rsz, 0)}),
-        i2v: ("LTXVImgToVideo", [1, 0.4],
+        i2v: ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
               {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2),
                "image": (rsz, 0), "width": (sel, 2), "height": (sel, 2), "length": (cnt, 3)}),
-        cond: ("LTXVConditioning", [], {"positive": (i2v, 0), "negative": (i2v, 1), "frame_rate": ("22", 0)}),
+        cond: ("LTXVConditioning", [25.0], {"positive": (i2v, 0), "negative": (i2v, 1), "frame_rate": ("22", 0)}),
         ks: ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
              {"model": ("10", 0), "positive": (cond, 0), "negative": (cond, 1), "latent_image": (i2v, 2)}),
         dec: ("VAEDecode", [], {"samples": (ks, 0), "vae": ("10", 2)}),
@@ -393,7 +453,7 @@ _b0, _p0 = _branch_numeric(30, 0, ("1", 0))
 _b1, _p1 = _branch_numeric(40, 1, _p0)
 NODES_PERRUN.update(_b0)
 NODES_PERRUN.update(_b1)
-NODES_PERRUN["99"] = ("VHS_VideoCombine", [0, "face_enhanced_perrun", "video/h264-mp4", False, True],
+NODES_PERRUN["99"] = ("VHS_VideoCombine", vhs_combine("face_enhanced_perrun"),
                       {"images": _p1, "frame_rate": ("22", 0)})
 # num_runs is now output slot 4 of FaceTrackCropAndGate (node 7). After a run the
 # crop node's console log also states it. To SEE the value on the canvas, wire
@@ -412,13 +472,13 @@ LAYOUT_PERRUN["99"] = (13, 0)
 # Same tracked-face front-end as Graph A, but the LTX resample block is replaced
 # by an H3 img2img stage: the crop node pads to H3's 17k+5 grid
 # (resampler="minimax_h3"); MiniMaxH3ReferenceToVideo builds the joint AV latent
-# with identity refs on ref_image_0; H3InjectVideoLatent seeds its VIDEO stream
-# with the real upscaled face clip (this is what makes it frame-faithful img2img);
-# MiniMaxH3NativeAudioLock locks the ORIGINAL vocals into the AUDIO stream and
-# masks sampling to video-only so the mouth lip-syncs; H3PerFrameDenoise scales
-# denoise by face size; SamplerCustomAdvanced + VAEDecode return the refined
-# frames; FaceTrackPasteBack composites them (colour_match on); the ORIGINAL audio
-# is muxed at save. Modeled on ComfyUI-H3-FaceRefine (Carasibana)'s proven wiring.
+# with identity refs on ref_image_0; the single H3FaceRefine node then seeds the
+# VIDEO stream with the real upscaled face clip (frame-faithful img2img), locks the
+# ORIGINAL audio into the AUDIO stream with video-only denoise (lip-sync), and
+# scales denoise by face size — all in one node; SamplerCustomAdvanced + VAEDecode
+# return the refined frames; FaceTrackPasteBack composites them (colour_match on);
+# the ORIGINAL audio is muxed at save. Modeled on ComfyUI-H3-FaceRefine
+# (Carasibana)'s proven wiring.
 NODES_H3 = {
     "1":  ("VHS_LoadVideo", ["input.mp4", 0, 0, 0, 0, 0, 1], {}),
     "2":  ("CheckpointLoaderSimple", ["sam3.1.safetensors"], {}),
@@ -427,15 +487,14 @@ NODES_H3 = {
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "24": ("GetMaskSizeAndCount", [], {"mask": ("5", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "9":  ("SAM3_TrackPreview", [0.5], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
+    "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     # resampler="minimax_h3" -> clip padded to H3's 17k+5 grid.
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "width", 0.10, 0.10, 10.0, 0.0, 0.02, 0.3, 0.4, 0.5, 0.4, "minimax_h3"],
+           [2.0, "width", 0.10, 0.10, 0.10, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4, "minimax_h3"],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
-    "8":  ("ImageResizeKJv2", ["lanczos", "stretch", "0, 0, 0", "center", 32],
+    "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
-    "23": ("GetImageSizeAndCount", [], {"image": ("8", 0)}),
     # ── H3 models ──
     "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
     "41": ("LoraLoaderModelOnly", ["minimax_h3_fl2v_lightx2v_turbo_4step.safetensors", 0.75],
@@ -451,53 +510,79 @@ NODES_H3 = {
     # Prompt MUST cite the reference with H3's <Subject N>/<Picture N> tags, or the
     # face will NOT follow ref_image_0 (per MiniMax's R2V prompt guide). <Picture 1>
     # = ref_images.ref_image_0.
+    # widget order is [prompt, width, height, length, ref_image_size]; width/height/
+    # length are also inputs (the links drive them) but their widget values MUST be
+    # present so ref_image_size="max" lands on the right widget, not "match".
     "47": ("MiniMaxH3ReferenceToVideo",
            ["<Subject 1> is the person in <Picture 1>. A sharp, detailed, high-quality "
             "close-up of <Subject 1>'s face, keeping the exact identity, facial features "
             "and skin texture from <Picture 1>, speaking naturally. Consistent identity, "
-            "natural lighting.", "max"],
+            "natural lighting.", 1344, 768, 124, "max"],
            {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
-            "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": ("1", 2),
-            "width": ("8", 1), "height": ("8", 2), "length": ("23", 3)}),
-    # img2img: seed the video stream with the real upscaled face clip.
-    "48": ("H3InjectVideoLatent", [], {"av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0)}),
-    # lipsync: lock the ORIGINAL video's audio into the audio stream (denoise video
-    # only). No separate vocals file needed — the mouth follows the source audio.
-    "49": ("MiniMaxH3NativeAudioLock", [],
-           {"model": ("41", 0), "av_latent": ("48", 0), "audio_vae": ("44", 0), "audio": ("1", 2)}),
-    "50": ("H3PerFrameDenoise", [1.0, 0.35, "absolute_px", 30.0, 120.0, 1.0, 9],
-           {"av_latent": ("49", 1), "track_data": ("7", 1)}),
-    "51": ("BasicGuider", [], {"model": ("49", 0), "conditioning": ("47", 0)}),
-    "52": ("BasicScheduler", ["simple", 4, 0.45], {"model": ("49", 0)}),
-    "53": ("KSamplerSelect", ["er_sde"], {}),
+            "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": ("57", 0),
+            "width": ("8", 1), "height": ("8", 2), "length": ("7", 5)}),
+    # Audio sliced to the gated clip's frames (so H3 lip-sync matches the enhanced
+    # frames, not the whole timeline). Full original audio is muxed at save.
+    "57": ("FaceTrackAudioSlice", [24.0, 24.0],
+           {"audio": ("1", 2), "track_data": ("7", 1), "source_fps": ("22", 0)}),
+    # One node: img2img inject (face clip) + lip-sync (original audio) + per-frame
+    # denoise. Outputs the patched model and the prepared AV latent.
+    "48": ("H3FaceRefine", [1.0, 0.35, "absolute_px", 30.0, 120.0, 1.0, 9],
+           {"model": ("56", 0), "av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0),
+            "track_data": ("7", 1), "audio_vae": ("44", 0), "audio": ("57", 0)}),
+    # Attention backend override, applied right after the Lora loader (falls back
+    # to PyTorch attention if the "comfy kitchen attention" kernels aren't installed).
+    "56": ("ModelAttentionBackend", ["comfy kitchen attention"], {"model": ("41", 0)}),
+    # H3FaceRefine outputs the patched model (attention + audio lock) for the sampler.
+    "51": ("BasicGuider", [], {"model": ("48", 0), "conditioning": ("47", 0)}),
+    "52": ("BasicScheduler", ["simple", 4, 0.45], {"model": ("48", 0)}),
+    "53": ("KSamplerSelect", ["res_multistep"], {}),
     "54": ("RandomNoise", [42, "fixed"], {}),
     "55": ("SamplerCustomAdvanced", [],
            {"noise": ("54", 0), "guider": ("51", 0), "sampler": ("53", 0),
-            "sigmas": ("52", 0), "latent_image": ("50", 0)}),
+            "sigmas": ("52", 0), "latent_image": ("48", 1)}),
     "16": ("VAEDecode", [], {"samples": ("55", 0), "vae": ("43", 0)}),
     # colour_match=1.0 -> match refined face tone to the original region (edge seam).
     "20": ("FaceTrackPasteBack", [0.15, "mask", True, 1.0],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
-    # "Was a face detected?" from the SAM3 mask, OUTSIDE the detailer branch.
-    "25": ("MaskHasFace", [1], {"masks": ("5", 0)}),
     # LazySwitchKJ: on_true = detailer output (20), on_false = original video (1).
-    # on_true is LAZY, so when no face is detected the whole crop -> H3 -> paste
-    # chain (7,8,47,48,49,50,55,16,20) is NOT executed — no wasted H3 pass.
-    "26": ("LazySwitchKJ", [], {"switch": ("25", 0), "on_false": ("1", 0), "on_true": ("20", 0)}),
+    # The switch is driven by FaceTrackCropAndGate's `enhanced` BOOLEAN (True iff
+    # >=1 frame qualified). The gate runs eagerly to drive the switch; on_true is
+    # LAZY, so when `enhanced` is False the whole H3 chain (8,47,48,55,16,20) is
+    # NOT executed — no wasted H3 pass, no model load, and the no-op dummy never
+    # reaches Resize (which would collapse to 0 under divisible_by=32). Covers both
+    # the no-face case and the "faces present but none qualify" case in one signal.
+    "26": ("LazySwitchKJ", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
     # original audio muxed onto the saved video (H3 assumes 24fps for lipsync).
-    "21": ("VHS_VideoCombine", [0, "face_enhanced_h3", "video/h264-mp4", False, True],
+    "21": ("VHS_VideoCombine", vhs_combine("face_enhanced_h3"),
            {"images": ("26", 0), "frame_rate": ("22", 0), "audio": ("1", 2)}),
 }
-LAYOUT_H3 = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
-             "24": (3, 1), "22": (1, 0), "9": (3, 3), "7": (4, 0), "8": (5, 0), "23": (5, 1),
-             "40": (4, 3), "41": (5, 3), "42": (4, 4), "43": (4, 5), "44": (4, 6),
-             "45": (5, 4),
-             "47": (6, 0), "48": (7, 0), "49": (8, 0), "50": (9, 0),
-             "51": (8, 3), "52": (9, 3), "53": (8, 4), "54": (9, 4),
-             "55": (10, 0), "16": (11, 0), "20": (12, 0), "25": (12, 2), "26": (13, 1),
-             "21": (14, 0)}
+# Layout is split into two bands so the subgraph nodes form one clean rectangle:
+#   Row 0  = nodes that stay OUTSIDE the subgraph (loaders, LoadVideo, VideoInfo,
+#            ModelAttentionBackend, VideoCombine).
+#   Rows 2+ = nodes that go INSIDE the subgraph (SAM3 -> gate -> resize -> H3 ->
+#            decode -> paste -> switch). A group box (GROUPS_H3) encloses exactly
+#            these, so "Convert to Subgraph" yields the intended 8-in/1-out boundary.
+LAYOUT_H3 = {
+    # ── OUTSIDE (top band, row 0) ──
+    "1": (0, 0), "22": (1, 0), "45": (2, 0), "40": (3, 0), "41": (4, 0),
+    "56": (5, 0), "42": (6, 0), "43": (7, 0), "44": (8, 0), "21": (9, 0),
+    # ── INSIDE the subgraph (rows 2+) ──
+    "2": (0, 2), "3": (1, 2), "4": (2, 2), "5": (3, 2), "24": (4, 2), "9": (5, 2),
+    "7": (0, 3), "8": (1, 3), "57": (2, 3),
+    "47": (0, 4), "48": (1, 4), "51": (3, 4), "52": (4, 4), "53": (5, 4), "54": (6, 4),
+    "55": (0, 5),
+    "16": (0, 6), "20": (1, 6), "26": (2, 6),
+}
+# Nodes that become the subgraph (everything except the outside band above).
+H3_SUBGRAPH_KEYS = ["2", "3", "4", "5", "24", "9", "7", "8", "57",
+                    "47", "48", "51", "52", "53", "54", "55", "16", "20", "26"]
+GROUPS_H3 = [{
+    "title": "H3 Face Detailer — select this group, then 'Convert to Subgraph'",
+    "keys": H3_SUBGRAPH_KEYS, "color": "#3f789e",
+}]
 
 build(NODES_TRACK, LAYOUT_TRACK, "workflows/face_enhance_ltx_track_workflow_UI.json")
 build(NODES_PERFACE, LAYOUT_PERFACE, "workflows/face_enhance_ltx_workflow_UI.json")
 build(NODES_PERRUN, LAYOUT_PERRUN, "workflows/face_enhance_ltx_track_perrun_workflow_UI.json")
-build(NODES_H3, LAYOUT_H3, "workflows/face_enhance_h3_track_workflow_UI.json")
+build(NODES_H3, LAYOUT_H3, "workflows/face_enhance_h3_track_workflow_UI.json", groups=GROUPS_H3)

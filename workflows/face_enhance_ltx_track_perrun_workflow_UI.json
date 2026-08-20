@@ -388,6 +388,18 @@
           "type": "INT",
           "links": [],
           "slot_index": 4
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": [],
+          "slot_index": 5
+        },
+        {
+          "name": "enhanced",
+          "type": "BOOLEAN",
+          "links": [],
+          "slot_index": 6
         }
       ],
       "properties": {
@@ -398,9 +410,9 @@
         "width",
         0.1,
         0.1,
-        10.0,
+        0.1,
         0.0,
-        0.02,
+        0.0,
         0.3,
         0.4,
         0.5,
@@ -629,12 +641,18 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 14
+          "link": 14,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 15
+          "link": 15,
+          "widget": {
+            "name": "height"
+          }
         }
       ],
       "outputs": [
@@ -670,11 +688,14 @@
         "Node name for S&R": "ImageResizeKJv2"
       },
       "widgets_values": [
+        512,
+        512,
         "lanczos",
         "stretch",
         "0, 0, 0",
         "center",
-        32
+        32,
+        "cpu"
       ]
     },
     {
@@ -769,17 +790,26 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 21
+          "link": 21,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 22
+          "link": 22,
+          "widget": {
+            "name": "height"
+          }
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 23
+          "link": 23,
+          "widget": {
+            "name": "length"
+          }
         }
       ],
       "outputs": [
@@ -812,6 +842,9 @@
         "Node name for S&R": "LTXVImgToVideo"
       },
       "widgets_values": [
+        768,
+        512,
+        97,
         1,
         0.4
       ]
@@ -844,7 +877,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 26
+          "link": 26,
+          "widget": {
+            "name": "frame_rate"
+          }
         }
       ],
       "outputs": [
@@ -868,7 +904,9 @@
       "properties": {
         "Node name for S&R": "LTXVConditioning"
       },
-      "widgets_values": []
+      "widgets_values": [
+        25.0
+      ]
     },
     {
       "id": 35,
@@ -1111,12 +1149,18 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 39
+          "link": 39,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 40
+          "link": 40,
+          "widget": {
+            "name": "height"
+          }
         }
       ],
       "outputs": [
@@ -1152,11 +1196,14 @@
         "Node name for S&R": "ImageResizeKJv2"
       },
       "widgets_values": [
+        512,
+        512,
         "lanczos",
         "stretch",
         "0, 0, 0",
         "center",
-        32
+        32,
+        "cpu"
       ]
     },
     {
@@ -1251,17 +1298,26 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 46
+          "link": 46,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 47
+          "link": 47,
+          "widget": {
+            "name": "height"
+          }
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 48
+          "link": 48,
+          "widget": {
+            "name": "length"
+          }
         }
       ],
       "outputs": [
@@ -1294,6 +1350,9 @@
         "Node name for S&R": "LTXVImgToVideo"
       },
       "widgets_values": [
+        768,
+        512,
+        97,
         1,
         0.4
       ]
@@ -1326,7 +1385,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 51
+          "link": 51,
+          "widget": {
+            "name": "frame_rate"
+          }
         }
       ],
       "outputs": [
@@ -1350,7 +1412,9 @@
       "properties": {
         "Node name for S&R": "LTXVConditioning"
       },
-      "widgets_values": []
+      "widgets_values": [
+        25.0
+      ]
     },
     {
       "id": 45,
@@ -1525,7 +1589,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 62
+          "link": 62,
+          "widget": {
+            "name": "frame_rate"
+          }
         },
         {
           "name": "audio",
@@ -1544,13 +1611,19 @@
       "properties": {
         "Node name for S&R": "VHS_VideoCombine"
       },
-      "widgets_values": [
-        0,
-        "face_enhanced_perrun",
-        "video/h264-mp4",
-        false,
-        true
-      ]
+      "widgets_values": {
+        "frame_rate": 30,
+        "loop_count": 0,
+        "filename_prefix": "face_enhanced_perrun",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": ""
+      }
     }
   ],
   "links": [

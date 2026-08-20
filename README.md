@@ -100,10 +100,10 @@ the MiniMax H3 models (diffusion model, Qwen3-VL text encoder, and the H3 video 
 audio VAEs — [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3))
 placed in the usual ComfyUI model folders.
 
-> **The H3 img2img / lip-sync / per-frame-denoise nodes are built into this pack**
-> (`H3InjectVideoLatent`, `MiniMaxH3NativeAudioLock`, `H3PerFrameDenoise`), so the
-> H3 workflow needs **no third-party node packs** beyond core H3 (and KJNodes/VHS
-> as above). Their logic is adapted from the community packs credited under
+> **The H3 img2img / lip-sync / per-frame-denoise logic is built into this pack**
+> as the single `H3FaceRefine` node, so the H3 workflow needs **no third-party node
+> packs** beyond core H3 (and KJNodes/VHS as above). Its logic is adapted from the
+> community packs credited under
 > [Acknowledgements](#acknowledgements).
 
 ---
@@ -117,7 +117,7 @@ Drag any of these onto the ComfyUI canvas (they are UI workflow-format JSON):
 | `workflows/face_enhance_ltx_track_workflow_UI.json` | **Recommended.** Temporally-coherent single LTX pass over one tracked face. |
 | `workflows/face_enhance_ltx_track_perrun_workflow_UI.json` | Reference variant that gives **each run its own LTX pass** (no cross-run bridging). Ships configured for up to 2 runs. |
 | `workflows/face_enhance_ltx_workflow_UI.json` | Per-frame, per-face variant (uses `SAM3_Detect` union masks; handles multiple faces per frame, no tracking). |
-| `workflows/face_enhance_h3_track_workflow_UI.json` | **MiniMax H3 variant** with lip-sync. Same tracked front-end, but the LTX block is replaced by H3 img2img (`MiniMaxH3ReferenceToVideo` → `H3InjectVideoLatent` → `MiniMaxH3NativeAudioLock` → `H3PerFrameDenoise` → `SamplerCustomAdvanced`). See [MiniMax H3](#minimax-h3-resampler-with-lip-sync). |
+| `workflows/face_enhance_h3_track_workflow_UI.json` | **MiniMax H3 variant** with lip-sync. Same tracked front-end, but the LTX block is replaced by H3 img2img (`MiniMaxH3ReferenceToVideo` → `H3FaceRefine` → `SamplerCustomAdvanced`). See [MiniMax H3](#minimax-h3-resampler-with-lip-sync). |
 
 Set the placeholders before running: the input `video`, the SAM 3 / 3.1
 `ckpt_name`, and the LTXV `ckpt_name` (LTX workflows). For the **H3** workflow set
@@ -143,17 +143,23 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `threshold_type` | choice | width | which face dimension the gate uses: **width**, **height**, or **area**. Selects which of the three parameters below is active (the UI shows only that one). |
 | `max_width_fraction` | FLOAT | 0.10 | *(threshold_type=width)* enhance a frame **only while** the face is narrower than this fraction of the frame **width** |
 | `max_height_fraction` | FLOAT | 0.10 | *(threshold_type=height)* enhance **only while** the face is shorter than this fraction of the frame **height** |
-| `max_area_percent` | FLOAT | 10.0 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **percent of the whole frame area** (e.g. 12.1 = faces smaller than 12.1% of the frame) |
-| `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a percent in the same measure as `threshold_type`. Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. |
+| `max_area_fraction` | FLOAT | 0.10 | *(threshold_type=area)* enhance **only while** the face bbox occupies less than this **fraction of the whole frame area** (e.g. 0.12 = faces smaller than 12% of the frame) |
+| `min_threshold_fraction` | FLOAT | 0.0 | **lower bound**, as a **fraction** in the same measure as `threshold_type` (matching the `max_*` units above). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** the active `max_*_fraction` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
 | `hysteresis` | FLOAT | 0.0 | dead-band around **both** thresholds (same normalized units as the chosen measure) to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
 | `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 0.4 | crop **center** smoothing (EMA). **1.0 = follow the face exactly, no positional lag** |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
 | `size_smooth_alpha` | FLOAT | 0.4 | crop **size** smoothing (EMA) — the actual *wobble* control, independent of position |
-| `resampler` | choice | ltx | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **ltx** → `8n+1` (LTXVImgToVideo); **minimax_h3** → `17k+5` (MiniMax H3). The padded frame count is what you wire into the resampler's `length`, so paste-back stays 1:1. Leave `ltx` for the LTX workflows. |
+| `resampler` | choice | ltx | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **ltx** → `8n+1` (LTXVImgToVideo); **minimax_h3** → `17k+5` (MiniMax H3). The padded frame count is what you wire into the resampler's `length` (use the `frame_count` output), so paste-back stays 1:1. Leave `ltx` for the LTX workflows. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
-(INT), `enhanced_frames` (INT), `num_runs` (INT).
+(INT), `enhanced_frames` (INT), `num_runs` (INT), `frame_count` (INT — the
+**padded** clip length, i.e. what the resampler's `length` must be; wire it
+straight into `MiniMaxH3ReferenceToVideo.length` / `LTXVImgToVideo.length`
+instead of a separate `GetImageSizeAndCount` node), `enhanced` (BOOLEAN — True iff
+≥1 frame qualified; wire into `LazySwitchKJ.switch` so the enhance branch is
+skipped when nothing qualifies. This is the recommended gate — it supersedes
+`MaskHasFace`, since "no face" is just one way to get 0 qualifying frames).
 
 > **Anti-wobble tip:** for a steady face that the mask jitters on, use
 > `smooth_alpha = 1.0` (exact position) and lower `size_smooth_alpha`
@@ -185,13 +191,13 @@ crop's frame count, rather than silently pasting faces onto wrong frames.
 
 ### Mask Has Face (bool) — `MaskHasFace`
 `MASK -> (BOOLEAN has_face, INT frames_with_face)`. True if any frame's mask has
-at least `min_pixels` set. Wire `has_face` into a **KJNodes `LazySwitchKJ`** to
-**skip the entire detailer branch when no face is detected**: put the detailer
-output on `on_true` and the original video on `on_false`. Because `LazySwitchKJ`'s
-inputs are lazy, the crop -> upscale -> LTX -> paste chain is *not executed* when
-`has_face` is False (no wasted LTX pass on faceless clips). The example track
-workflow is wired this way. Place `MaskHasFace` on the SAM3 mask **outside** the
-detailer branch (it reads `SAM3_TrackToMask` directly).
+at least `min_pixels` set. **Superseded in the example workflows** by
+`FaceTrackCropAndGate.enhanced`, which is a stricter gate: it's True only when
+≥1 frame actually falls inside the enable window, whereas `MaskHasFace` fires on
+*any* mask pixel (so a non-face SAM3 blob, or a face too large to need
+enhancement, would still run the branch). The node is kept for cases where you
+specifically want "any face present" rather than "any frame will be enhanced."
+It reads the SAM3 mask directly, so place it **outside** the detailer branch.
 
 ### Face Track Select Run (per-run) — `FaceTrackSelectRun`
 Extracts one contiguous run from a multi-run clip for an independent LTX pass.
@@ -214,28 +220,42 @@ A simple primitive: zero out per-frame masks whose face bbox is ≥
 `max_width_fraction` of the frame width. Pairs with KJNodes'
 `FilterZeroMasksAndCorrespondingImages` for custom one-crop-per-frame pipelines.
 
-### MiniMax H3 img2img / lip-sync nodes
-These three turn the local **MiniMax H3** joint audio-video model into a face
-resampler for the tracked pipeline. Only the H3 workflow uses them; the LTX
-workflows ignore them.
+### MiniMax H3 Face Refine — `H3FaceRefine`
+One node that turns the local **MiniMax H3** joint audio-video model into a face
+resampler for the tracked pipeline. It does three things in the one correct order
+(so the workflow stays simple; only the H3 workflow uses it):
 
-- **H3 Inject Video Latent (img2img) — `H3InjectVideoLatent`.** Encodes the
-  upscaled face clip into the **video stream** of H3's joint AV latent so the
-  sampler runs genuine img2img (H3's stock nodes start from zeros, which would
-  *regenerate* rather than *refine*). Inputs: `av_latent` (from
-  `MiniMaxH3ReferenceToVideo`), `images` (the upscaled `face_clip`), `vae` (H3
-  **video** VAE).
-- **MiniMax H3 Native Audio Lock (lipsync) — `MiniMaxH3NativeAudioLock`.** Encodes
-  the **original audio** (the source video's track, or an isolated-vocals source)
-  into the audio stream and masks sampling so only video denoises while attending
-  to that fixed audio — this shapes the mouth. Inputs: `model`, `av_latent`,
-  `audio_vae` (H3 **audio** VAE), `audio`.
-  Outputs a patched `model`. Relies on core H3 honouring the
-  `minimax_h3_lock_audio_clean` transformer option.
-- **H3 Per-Frame Denoise — `H3PerFrameDenoise`.** Varies denoise along time via the
-  latent noise mask — strong on tiny faces (synthesise), gentle on large ones
-  (preserve) — sourcing per-frame face size from `track_data`. Place **after** the
-  audio lock so its audio-side zeros survive.
+1. **img2img inject** — encodes the upscaled face clip into the **video stream** of
+   H3's joint AV latent, so the sampler runs genuine img2img (H3's stock nodes start
+   from zeros, which would *regenerate* rather than *refine*).
+2. **lip-sync** — encodes the **original audio** (the source video's track, or an
+   isolated-vocals source) into the audio stream and masks sampling so only video
+   denoises while attending to that fixed audio — this shapes the mouth. Relies on
+   core H3 honouring the `minimax_h3_lock_audio_clean` transformer option.
+3. **per-frame denoise** — varies denoise along time via the latent noise mask,
+   strong on tiny faces (synthesise) and gentle on large ones (preserve), sourcing
+   per-frame face size from `track_data`.
+
+**Inputs:** `model`, `av_latent` (from `MiniMaxH3ReferenceToVideo`), `images` (the
+upscaled `face_clip`), `vae` (H3 **video** VAE), `track_data`; and optionally
+`audio_vae` (H3 **audio** VAE) + `audio` for lip-sync (omit both to skip it). Plus
+the per-frame-denoise widgets (`strength_small_face`, `strength_large_face`,
+`scale_mode`, `face_px_small`, `face_px_large`, `gamma`, `smooth_frames`).
+**Outputs:** patched `model` (→ `BasicGuider` / `BasicScheduler`), `av_latent`
+(→ `SamplerCustomAdvanced.latent_image`), and a `report` string. Set the overall
+strength with `BasicScheduler`'s `denoise`.
+
+### Face Track Audio Slice — `FaceTrackAudioSlice`
+Reindexes the source audio to the **gated** face clip so H3 lip-sync matches the
+enhanced frames instead of the whole timeline. For each clip frame it takes a
+`1/target_fps`-second window from the source at that frame's original time
+(`source frame index ÷ source_fps`) and concatenates them in clip order (silence
+for pad/absent frames). **Inputs:** `audio`, `track_data`, `source_fps` (wire
+`VHS_VideoInfo` `source_fps`), `target_fps` (24 for H3). **Output:** `audio`
+aligned 1:1 with the clip — feed it to `H3FaceRefine`'s `audio` and the H3
+reference node's `ref_audio`. Mux the **full original** audio at the save node.
+For a 24fps source + one contiguous run this is a plain slice; other fps / multiple
+runs are resampled per frame onto the 24fps grid.
 
 ---
 
@@ -244,26 +264,74 @@ workflows ignore them.
 `workflows/face_enhance_h3_track_workflow_UI.json` swaps the LTX block for a local
 MiniMax H3 img2img pass that lip-syncs the refined face to the original audio.
 
-**Pipeline:** `FaceTrackCropAndGate` (`resampler = minimax_h3`) → `ImageResizeKJv2`
-(×32) → `MiniMaxH3ReferenceToVideo` (identity refs on `ref_image_0`; `width`/`height`
-from the resize, `length` from the clip's frame count) → `H3InjectVideoLatent`
-(seed the video stream with the face clip) → `MiniMaxH3NativeAudioLock` (lock the
-source video's audio) → `H3PerFrameDenoise` → `SamplerCustomAdvanced` → `VAEDecode` →
-`FaceTrackPasteBack` (`colour_match ≈ 1.0`) → `VHS_VideoCombine` (mux the original
-audio).
+**Pipeline** (`workflows/face_enhance_h3_track_workflow_UI.json`):
+
+```
+Model chain (each step patches the model; the sampler uses the final one):
+  UNETLoader (H3 ref2va) → LoraLoaderModelOnly (turbo) → ModelAttentionBackend ("comfy kitchen attention")
+      → H3FaceRefine (model in) → [H3FaceRefine emits the patched model] → BasicGuider + BasicScheduler
+
+Main graph:
+  VHS_LoadVideo ─┬─ images ─► SAM3_VideoTrack ─► SAM3_TrackToMask ─ mask ─► FaceTrackCropAndGate
+                 │                                                          (resampler = minimax_h3)
+                 │                                          ┌──── enhanced (BOOL) ──────────────────┐
+                 │                                     face_clip ─┐  │ track_data                    │
+                 │                                          ▼      │  │                              │
+                 │                                ImageResizeKJv2 (×32)    │                          │
+                 │   audio (source) ─► FaceTrackAudioSlice ─(sliced audio)─┐                          │
+                 │   ref image ─────► MiniMaxH3ReferenceToVideo ◄──────────┘ │                        │
+                 │                        (length ← frame_count, ref_image_size = max)               │
+                 │                                positive │ AV latent     │                          │
+                 │                                         ▼               │                          │
+                 │            H3FaceRefine  (img2img inject + lip-sync + per-frame denoise)           │
+                 │                                         │ av_latent                                │
+                 │                                         ▼                                           │
+                 │            SamplerCustomAdvanced ─► VAEDecode ─ refined faces                      │
+                 │                                                     │                               │
+                 ├─ original frames ──────► FaceTrackPasteBack (colour_match) ◄────────────────────────┘
+                 │                                     │ on_true (LAZY)
+                 │      gate.enhanced ─────────► LazySwitchKJ  (on_false = original video)
+                 │                                     │
+                 └─ audio (source) ───────► VHS_VideoCombine (frame_rate ← source_fps) ─► saved .mp4
+```
+
+The switch is driven by `FaceTrackCropAndGate.enhanced` (True iff ≥1 frame
+qualified). The gate runs eagerly to produce that boolean, but the whole enhance
+branch (Resize → H3 → sampler → decode → paste, plus the H3 model loaders) sits
+behind the **lazy** `on_true` — so when no frame qualifies (large-face video,
+empty enable window, or no face at all) the branch is **never executed** and the
+original video passes through `on_false`. This is why `MaskHasFace` is no longer
+needed in the graph: the gate's own decision is a strict superset of "is there a
+face" (no face ⇒ 0 frames ⇒ `enhanced=False`).
+
+Also wired (left out above for readability): the H3 **text encoder** → `MiniMaxH3ReferenceToVideo`;
+the **video VAE** → `MiniMaxH3ReferenceToVideo` / `H3FaceRefine` / `VAEDecode`; the **audio VAE** →
+`MiniMaxH3ReferenceToVideo` and `H3FaceRefine`; and `FaceTrackCropAndGate`'s `track_data` →
+`FaceTrackAudioSlice`, `H3FaceRefine` (per-frame denoise) and `FaceTrackPasteBack`.
+
+> **Why `FaceTrackAudioSlice`?** The gate keeps only the small-face frames (often
+> several non-contiguous runs) and concatenates them, so the clip fed to H3 is a
+> **subset** of the timeline. H3's lip-sync lock aligns audio to video **1:1**, so
+> feeding the whole track would sync the generated mouths to the wrong words.
+> `FaceTrackAudioSlice` reindexes the source audio to the gated clip's frames
+> (per clip frame, a window from the source at that frame's original time), so the
+> lip-sync matches. The **full original audio** is still muxed onto the saved video
+> at `VHS_VideoCombine`. (This is why this pack needs the slice while Carasibana's
+> doesn't — that pack runs *every* frame through H3, so the whole audio aligns.)
 
 **Constraints (handled for you):**
 - **Frame count on H3's `17k+5` grid** — set by `resampler = minimax_h3` on the crop
-  node; the padded count drives H3 `length`, and pad frames are ignored on
+  node; its **`frame_count`** output (the padded length) drives `MiniMaxH3ReferenceToVideo.length`
+  **directly** — no `GetImageSizeAndCount` node needed — and pad frames are ignored on
   paste-back.
 - **Canvas divisible by 32** — the `ImageResizeKJv2` `divisible_by = 32` widget.
 - **24 fps** — H3 interprets `length` at 24 fps, so lip-sync is most accurate on
   24 fps source; the result is muxed with the original audio at the source fps.
 
-**Identity vs. content:** the face clip is the img2img *content* (via
-`H3InjectVideoLatent`); `ref_image_0` is the *identity* reference (the character
-image you generated with). Do **not** feed the clip as `ref_videos` — that
-regenerates rather than refines.
+**Identity vs. content:** the face clip is the img2img *content* (injected by
+`H3FaceRefine`); `ref_image_0` is the *identity* reference (the character image you
+generated with). Do **not** feed the clip as `ref_videos` — that regenerates rather
+than refines.
 
 > **Set `ref_image_size = max` on `MiniMaxH3ReferenceToVideo`** (the shipped
 > value). At `match` the reference is downscaled to the small face canvas and
@@ -283,6 +351,32 @@ regenerates rather than refines.
 > `<Picture N>` tag (e.g. "a woman talking on the phone") leaves the identity
 > unbound even when a reference image is connected.
 
+### Packaging the detailer as a subgraph
+
+The H3 workflow ships with a group box titled **"H3 Face Detailer — select this
+group, then 'Convert to Subgraph'"** around the whole detailer core (SAM3 →
+gate → resize → H3 → decode → paste → `LazySwitchKJ`). To collapse it into a
+single reusable subgraph node:
+
+1. Click the group's title bar to select all nodes inside it.
+2. Right-click → **Convert to Subgraph** (ComfyUI builds it in your exact
+   frontend version's format).
+3. The subgraph exposes **8 inputs** and **1 output** — the links that cross the
+   group boundary:
+   - inputs: `images` (source frames), `model`, `clip`, `vae`, `audio_vae`,
+     `reference_image` (identity), `audio` (source), `source_fps`
+   - output: `images` (the final composited frames from `LazySwitchKJ`)
+4. ComfyUI names the input slots after their source (e.g. `IMAGE`, `VAE`,
+   `MODEL`); double-click a slot to rename it to the friendly names above.
+
+`ModelAttentionBackend`, the H3 loaders, `VHS_LoadVideo`, `VHS_VideoInfo`, and
+`VHS_VideoCombine` stay **outside** and wire into the subgraph node. (The SAM3
+checkpoint stays inside, since SAM3 tracking is part of the detailer.)
+
+> Hand-authoring subgraph JSON directly is intentionally avoided here: ComfyUI's
+> subgraph serialization is version-specific, so the reliable, portable way to
+> create one is the in-editor **Convert to Subgraph** on the pre-grouped nodes.
+
 ### Edges, seams, and denoise
 
 If the pasted face doesn't match the surrounding video at the edges:
@@ -294,8 +388,8 @@ If the pasted face doesn't match the surrounding video at the edges:
   high and the head drifts relative to the body, which no mask can hide. On H3,
   `denoise` lives on `BasicScheduler` (not `SplitSigmas`), and H3's large
   sigma-shift makes small values stronger than they look.
-- **`H3PerFrameDenoise`** avoids over-rewriting already-large faces — where seams
-  are most visible — by dropping denoise as face size grows.
+- **`H3FaceRefine`'s per-frame denoise** avoids over-rewriting already-large faces —
+  where seams are most visible — by dropping denoise as face size grows.
 - **`feather`** / **`padding`** put the seam in hair/background; SAM-style masks
   trace tightly, so lower `feather` if you use them.
 
@@ -322,10 +416,30 @@ Extra branches are safe no-ops.
 
 ## Tips & troubleshooting
 
-- **"stack expects a non-empty TensorList"** at the Resize node → the gate
-  selected **0 frames** (no face was small enough, or `mask_track` was empty).
-  The node now raises a clear message instead; raise `max_width_fraction`, lower
-  `hysteresis`, or check the SAM3 track / `object_indices`.
+- **The whole video came through unenhanced + a `WARNING: 0 frames selected for
+  enhancement` in the console** → the gate found **no frame inside the enable
+  window**, so it emits a **no-op passthrough** (original video preserved) rather
+  than crashing. The warning states the cause. Common ones: no face was small
+  enough (raise `max_*_fraction`), `min_threshold_fraction ≥ max_*_fraction` so
+  the window is empty (lower `min_threshold_fraction`, usually back to `0`),
+  `hysteresis` too wide, or the SAM3 track was empty (check `object_indices`).
+  Note: because the gate runs eagerly upstream, a downstream `LazySwitchKJ`
+  cannot skip it — this graceful no-op is what makes the skip-when-no-face case
+  work end to end. Also remember only the parameter matching `threshold_type` is
+  active (e.g. under `threshold_type=width`, `max_area_fraction` is ignored).
+- **`ValueError: height and width must be > 0` at the Resize (ImageResizeKJv2)
+  node** → this happened in older graphs when 0 frames qualified: the gate emitted
+  a tiny no-op dummy that Resize's `divisible_by` (e.g. 32) rounded down to 0
+  (`16 - 16%32 = 0`). **Fixed** by driving `LazySwitchKJ.switch` from
+  `FaceTrackCropAndGate.enhanced` (slot 6): when no frame qualifies the branch —
+  including Resize — is skipped entirely, so the dummy never reaches Resize.
+  Re-import the current workflow (switch ← `enhanced`, **not** `MaskHasFace`) and
+  do a **full ComfyUI restart**.
+- **The enhance branch runs even though "there's no face"** → in older graphs the
+  switch was driven by `MaskHasFace`, which counts *any* mask pixel, so a non-face
+  SAM3 blob made it run. Now the switch is driven by the gate's `enhanced` boolean,
+  which is True only when ≥1 frame actually falls inside the enable window — so a
+  non-qualifying clip (too-large faces, empty window, no face) skips the branch.
 - **A node shows up red / "UNKNOWN" after updating** → do a **full ComfyUI
   restart** (not the Manager restart) and clear `__pycache__`.
 - **The resampled face looks bigger than the original** → high `padding` gives
@@ -365,8 +479,7 @@ nodes, and designed to interoperate with
 [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) and
 [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite).
 
-The MiniMax H3 img2img / lip-sync / per-frame-denoise nodes
-(`H3InjectVideoLatent`, `MiniMaxH3NativeAudioLock`, `H3PerFrameDenoise`) adapt the
+The `H3FaceRefine` node's img2img / lip-sync / per-frame-denoise logic adapts the
 approach first worked out in:
 - [**ComfyUI-H3-FaceRefine**](https://github.com/Carasibana/ComfyUI-H3-FaceRefine)
   by Carasibana (MIT) — the video-latent img2img injection and per-frame denoise;

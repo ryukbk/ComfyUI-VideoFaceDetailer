@@ -428,7 +428,7 @@ class FaceTrackCropAndGate:
                                     "tooltip": "Which face dimension the size gate uses: 'width' -> "
                                                "max_width_fraction (fraction of frame width); 'height' -> "
                                                "max_height_fraction (fraction of frame height); 'area' -> "
-                                               "max_area_percent (face bbox as a % of the whole frame area). "
+                                               "max_area_fraction (fraction of the whole frame area). "
                                                "Only the matching parameter below is used."}),
                 "max_width_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
                                                  "tooltip": "[threshold_type=width] Enhance a frame ONLY while the "
@@ -436,16 +436,17 @@ class FaceTrackCropAndGate:
                 "max_height_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
                                                   "tooltip": "[threshold_type=height] Enhance a frame ONLY while the "
                                                              "face is shorter than this fraction of the frame height."}),
-                "max_area_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 0.1,
+                "max_area_fraction": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.005,
                                              "tooltip": "[threshold_type=area] Enhance a frame ONLY while the face "
-                                                        "bbox occupies less than this percent of the whole frame "
-                                                        "area. E.g. 12.1 = faces smaller than 12.1% of the frame."}),
-                "min_threshold_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1,
-                                             "tooltip": "Lower bound, as a PERCENT in the same measure as "
-                                                        "threshold_type (width/height -> % of that dimension; area "
-                                                        "-> % of frame area). Faces SMALLER than this are skipped "
-                                                        "(too tiny to resample usefully). 0 = no lower bound. "
-                                                        "Enhancement runs only when min < measure < max."}),
+                                                        "bbox occupies less than this fraction of the whole frame "
+                                                        "area. E.g. 0.12 = faces smaller than 12% of the frame."}),
+                "min_threshold_fraction": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
+                                             "tooltip": "Lower bound, as a FRACTION in the same measure as "
+                                                        "threshold_type (width/height -> fraction of that dimension; "
+                                                        "area -> fraction of frame area), matching the max_* units "
+                                                        "above. Faces SMALLER than this are skipped (too tiny to "
+                                                        "resample usefully). 0 = no lower bound. Enhancement runs "
+                                                        "only when min < measure < max."}),
                 "hysteresis": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.5, "step": 0.005,
                                          "tooltip": "Dead-band around the threshold, in the SAME normalized units as "
                                                     "the chosen measure (fraction of width/height, or fraction of "
@@ -483,8 +484,9 @@ class FaceTrackCropAndGate:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT")
-    RETURN_NAMES = ("face_clip", "track_data", "target_size", "enhanced_frames", "num_runs")
+    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT", "INT", "BOOLEAN")
+    RETURN_NAMES = ("face_clip", "track_data", "target_size", "enhanced_frames",
+                    "num_runs", "frame_count", "enhanced")
     FUNCTION = "crop"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("Per-frame size-gated crop clip for a tracked face: only "
@@ -493,9 +495,9 @@ class FaceTrackCropAndGate:
                    "target_size = native window * upscale_ratio.")
 
     def crop(self, images, mask_track, upscale_ratio, threshold_type, max_width_fraction,
-             max_height_fraction, max_area_percent, hysteresis,
+             max_height_fraction, max_area_fraction, hysteresis,
              padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
-             min_threshold_percent=0.0, resampler="ltx"):
+             min_threshold_fraction=0.0, resampler="ltx"):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -510,10 +512,10 @@ class FaceTrackCropAndGate:
         if threshold_type == "height":
             thr = float(max_height_fraction)
         elif threshold_type == "area":
-            thr = float(max_area_percent) / 100.0
+            thr = float(max_area_fraction)
         else:  # width (default)
             thr = float(max_width_fraction)
-        thr_min = max(0.0, float(min_threshold_percent) / 100.0)  # lower bound (0 = off)
+        thr_min = max(0.0, float(min_threshold_fraction))  # lower bound (0 = off)
         # Upper-bound dead-band (existing behavior).
         on_thresh = thr - hysteresis    # must be below this to (re)enable
         off_thresh = thr + hysteresis   # at/above this -> disable
@@ -562,32 +564,63 @@ class FaceTrackCropAndGate:
 
         enhanced_idx = [i for i in range(N) if enhance[i]]
         if not enhanced_idx:
-            # No frame qualified. Emitting an empty batch crashes downstream nodes
-            # (Resize/LTX call torch.stack on it). Raise a clear, actionable error
-            # instead, with the diagnostics needed to fix it.
+            # No frame qualified for enhancement. Historically this raised and
+            # killed the whole graph — but that defeats a workflow that WANTS to
+            # skip the detailer branch (a large-face video needing no enhancement,
+            # or a LazySwitchKJ gated on MaskHasFace). The gate runs eagerly
+            # upstream, so a hard raise fires BEFORE any downstream switch can skip
+            # it. Instead, emit a valid DUMMY no-op clip (mirrors FaceTrackSelectRun
+            # for empty runs): a minimal batch on the resampler's grid, every entry
+            # present=False, and n_real=0. Downstream Resize/H3/Decode run
+            # harmlessly on it, and FaceTrackPasteBack skips every frame -> the
+            # ORIGINAL video passes through unchanged. We still print a detailed
+            # WARNING so a genuine misconfig stays visible in the log.
             present = [m for m in measures if m is not None]
             unit = {"height": "frame height", "area": "frame area"}.get(
                 threshold_type, "frame width")
             if not present:
-                detail = ("the tracked mask was EMPTY on every frame — SAM3 "
-                          "tracked nothing for the selected object index. Check "
-                          "SAM3_TrackToMask 'object_indices' and that the face is "
-                          "actually detected.")
+                why = ("the tracked mask was EMPTY on every frame — SAM3 tracked "
+                       "nothing for the selected object index (check "
+                       "SAM3_TrackToMask 'object_indices' and that the face is "
+                       "actually detected)")
             else:
-                minm = min(present)
-                detail = (f"the face never dropped below the enable threshold. "
-                          f"Smallest face was {minm * 100:.1f}% of {unit}, but "
-                          f"enhancement only turns on below (threshold - hysteresis) "
-                          f"= {on_thresh * 100:.1f}% (threshold_type={threshold_type}). "
-                          f"Raise the threshold, lower hysteresis, or accept that no "
-                          f"face is small enough.")
-            raise ValueError(
-                "FaceTrackCropAndGate: 0 frames selected for enhancement — "
-                + detail +
-                " (If you want large-face videos to pass through unchanged, this "
-                "enhancement branch cannot run on zero frames; bypass it or route "
-                "the original video to the output.)"
-            )
+                minm, maxm = min(present), max(present)
+                why = (f"no frame fell inside the enable window. Faces ranged "
+                       f"{minm * 100:.1f}%–{maxm * 100:.1f}% of {unit}; a frame is "
+                       f"enhanced only when the face is below {on_thresh * 100:.1f}% "
+                       f"(threshold {thr * 100:.1f}% − hysteresis "
+                       f"{hysteresis * 100:.1f}%)")
+                if thr_min > 0.0:
+                    why += (f" and above {lo_on * 100:.1f}% (min_threshold "
+                            f"{thr_min * 100:.1f}% + hysteresis)")
+                    if thr_min >= thr:
+                        why += (f". NOTE: min_threshold ({thr_min * 100:.1f}%) ≥ "
+                                f"threshold ({thr * 100:.1f}%) makes the enable "
+                                f"window EMPTY, so no face can ever qualify")
+                why += f" [threshold_type={threshold_type}]"
+            print("[FaceTrackCropAndGate] WARNING: 0 frames selected for "
+                  "enhancement — " + why + ". Emitting a no-op passthrough clip "
+                  "(the original video is preserved on paste-back). Adjust "
+                  "threshold / min_threshold / hysteresis if you expected "
+                  "enhancement here.")
+            side = 8
+            dummy_len = _next_valid_clip_len(1, resampler)
+            dummy = torch.zeros(dummy_len, side, side, C)
+            data = {"entries": [{"frame": -1, "x0": 0, "y0": 0, "win": 0,
+                                 "present": False, "run": -1, "cmask": None}
+                                for _ in range(dummy_len)],
+                    "orig_shape": (B, H, W, C), "out_side": side,
+                    "upscale_ratio": float(upscale_ratio), "n_real": 0,
+                    "n_runs": 0, "clip_length": dummy_len, "resampler": resampler,
+                    "ltx_length": dummy_len}
+            target_size = max(8, int(round(side * upscale_ratio)))
+            # frame_count = the (padded) clip length, so the resampler's `length`
+            # can be driven directly without a separate GetImageSizeAndCount.
+            # enhanced = False: no frame qualified. Wire this to LazySwitchKJ.switch
+            # so the whole enhance branch (Resize/H3/sampler) is SKIPPED — the dummy
+            # never reaches a resize node (which would collapse to 0 under
+            # divisible_by) and the original video passes through on_false.
+            return (dummy, data, target_size, 0, 0, dummy_len, False)
 
         # ── Crop each enhanced frame TIGHT to its own face bbox + padding ──────
         # Earlier versions used one constant SQUARE window sized to the max face
@@ -697,7 +730,7 @@ class FaceTrackCropAndGate:
             # enhanced frame (vs a pad frame appended below). 'cmask' is the
             # face-shaped alpha for that box.
             # Source face height (px) of THIS frame's face component — used by
-            # H3PerFrameDenoise to scale denoise strength inversely to face size.
+            # H3FaceRefine's per-frame denoise (scales denoise inversely to face size).
             _fb = boxes[i]
             face_px = float(_fb[3] - _fb[1] + 1)
             entries.append({"frame": i, "x0": x0, "y0": y0, "win": s,
@@ -747,7 +780,10 @@ class FaceTrackCropAndGate:
             print(f"[FaceTrackCropAndGate] padded clip {n_real}->{target_len} "
                   f"frames to a valid {resampler} length ({grid}); pad frames are "
                   f"ignored on paste-back.")
-        return (face_clip, data, target_size, n_real, n_runs)
+        # frame_count = the (padded) clip length; feed the resampler's `length`
+        # from this directly instead of a separate GetImageSizeAndCount node.
+        # enhanced = True: >=1 frame qualified, so the enhance branch should run.
+        return (face_clip, data, target_size, n_real, n_runs, target_len, n_real > 0)
 
 
 class FaceTrackSelectRun:
@@ -1039,121 +1075,36 @@ class MaskHasFace:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MiniMax H3 resampler support (img2img + native-audio lipsync + per-frame denoise)
+# MiniMax H3 face-refine (one node: img2img inject + lipsync + per-frame denoise)
 # ─────────────────────────────────────────────────────────────────────────────
-#
-# MiniMax H3 is a joint audio-video latent-diffusion model. Unlike LTXVImgToVideo
-# (a light img2video pass that already resamples an input clip frame-for-frame),
-# H3's stock nodes always build a ZEROS latent — references are conditioning that
-# is re-injected each step, never a starting point — so there is no stock
-# video-to-video path. To use H3 as the face resampler here we need three pieces,
-# adapted from the community packs that first worked this out:
-#
-#   * H3InjectVideoLatent      — encode the real (upscaled) face clip into the
-#                                VIDEO stream of H3's joint AV latent, turning
-#                                SamplerCustomAdvanced + truncated sigmas into
-#                                genuine img2img so the output tracks the input
-#                                frames 1:1 (adapted from ComfyUI-H3-FaceRefine
-#                                by Carasibana, MIT).
-#   * MiniMaxH3NativeAudioLock  — encode the ORIGINAL audio (isolated vocals) into
-#                                the AUDIO stream and mask sampling so only video
-#                                denoises while attending to that fixed audio —
-#                                this is what makes the mouth lip-sync to the real
-#                                track (adapted from ComfyUI-H3-NativeAudioLock by
-#                                Shrek3OnVH5). Relies on core H3 honouring the
-#                                transformer option "minimax_h3_lock_audio_clean".
-#   * H3PerFrameDenoise        — vary denoise along time (strong on tiny faces that
-#                                must be synthesised, gentle on large faces with
-#                                real detail) via the latent noise mask, sourcing
-#                                per-frame face size from this pack's
-#                                FACE_TRACK_DATA (adapted from ComfyUI-H3-FaceRefine).
-#
-# comfy / torchaudio are imported lazily inside each method so nodes.py still
-# imports (and unit-tests still run) without a full ComfyUI install.
+# MiniMax H3 is a joint audio-video latent-diffusion model. Its stock nodes always
+# build a ZEROS latent (references are conditioning re-injected each step), so there
+# is no stock video-to-video path. H3FaceRefine wraps the three steps needed to use
+# H3 as the face resampler, in the one correct order, so the workflow needs a single
+# node instead of three:
+#   1. inject the real (upscaled) face clip into the AV latent's VIDEO stream, turning
+#      SamplerCustomAdvanced + truncated sigmas into genuine img2img (output tracks the
+#      input frames 1:1);
+#   2. lock the ORIGINAL audio into the AUDIO stream and mask sampling so only video
+#      denoises while attending to that fixed audio — this drives lip-sync;
+#   3. scale denoise along time by face size (strong on tiny faces that must be
+#      synthesised, gentle on large faces with real detail) via the latent noise mask.
+# Feed its outputs straight into BasicGuider/BasicScheduler (model) and
+# SamplerCustomAdvanced (av_latent). audio/audio_vae are optional — omit to skip
+# lip-sync. Adapted from ComfyUI-H3-FaceRefine (Carasibana, MIT) and
+# ComfyUI-H3-NativeAudioLock (Shrek3OnVH5). comfy / torchaudio are imported lazily so
+# nodes.py still imports (and unit-tests still run) without a full ComfyUI install.
 
 
-class H3InjectVideoLatent:
-    """Encode real frames into the VIDEO stream of an H3 joint AV latent (img2img).
+class H3FaceRefine:
+    """MiniMax H3 face-refine setup in one node: img2img + lipsync + per-frame denoise.
 
-    Wire the H3 latent (from MiniMaxH3ReferenceToVideo / EmptyMiniMaxH3LatentAV)
-    into `av_latent`, the upscaled face_clip into `images`, and the H3 VIDEO vae
-    into `vae`. Set strength downstream with BasicScheduler's `denoise` (NOT
-    SplitSigmas). Pair with MiniMaxH3NativeAudioLock for the audio stream.
-    """
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "av_latent": ("LATENT",),
-                "images": ("IMAGE",),
-                "vae": ("VAE",),
-            },
-        }
-
-    RETURN_TYPES = ("LATENT", "STRING")
-    RETURN_NAMES = ("av_latent", "report")
-    FUNCTION = "run"
-    CATEGORY = "masking/face_gate"
-    DESCRIPTION = ("Encode real frames into the video stream of a MiniMax H3 joint "
-                   "AV latent so the sampler runs img2img (video-to-video).")
-
-    def run(self, av_latent, images, vae):
-        import comfy.nested_tensor
-        samples = av_latent.get("samples")
-        if samples is None:
-            raise KeyError('LATENT is missing "samples".')
-        is_nested = isinstance(samples, comfy.nested_tensor.NestedTensor) or getattr(
-            samples, "is_nested", False)
-        if not is_nested:
-            raise ValueError(
-                "Expected a MiniMax H3 joint AV latent (NestedTensor). Feed the LATENT "
-                "output of MiniMaxH3ReferenceToVideo / EmptyMiniMaxH3LatentAV.")
-
-        members = list(samples.unbind())
-        video_tmpl = members[0]
-
-        encoded = vae.encode(images[..., :3])
-        if encoded.ndim == 4:  # [B,C,H,W] -> [1,C,T,H,W]
-            encoded = encoded.unsqueeze(0).movedim(1, 2)
-
-        tgt_t, tgt_h, tgt_w = video_tmpl.shape[-3], video_tmpl.shape[-2], video_tmpl.shape[-1]
-        got_t, got_h, got_w = encoded.shape[-3], encoded.shape[-2], encoded.shape[-1]
-        if (got_h, got_w) != (tgt_h, tgt_w):
-            raise ValueError(
-                f"Spatial latent mismatch: encoded {got_h}x{got_w} but the AV latent "
-                f"expects {tgt_h}x{tgt_w}. The crop canvas and the H3 node's "
-                f"width/height must match (both are pixels/16).")
-        note = ""
-        if got_t != tgt_t:
-            # H3 packs 17 pixel frames -> 5 latent frames; a frame count off the
-            # 17k+5 grid lands here. Trim/pad rather than fail, but say so loudly.
-            # (FaceTrackCropAndGate with resampler='minimax_h3' pads to 17k+5, so
-            # this should not trigger in the shipped workflow.)
-            if got_t > tgt_t:
-                encoded = encoded[..., :tgt_t, :, :]
-            else:
-                pad = video_tmpl[..., : tgt_t - got_t, :, :].to(encoded.device, encoded.dtype)
-                encoded = torch.cat([encoded, pad], dim=-3)
-            note = (f"  WARNING temporal mismatch: encoded t={got_t} vs latent t={tgt_t} "
-                    f"-> {'trimmed' if got_t > tgt_t else 'padded'}. Set the crop node's "
-                    f"resampler to 'minimax_h3' so the clip lands on H3's 17k+5 grid.\n")
-
-        members[0] = encoded.to(video_tmpl.device, video_tmpl.dtype)
-        out = dict(av_latent)
-        out["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
-        report = (f"injected video latent {tuple(encoded.shape)} into AV latent "
-                  f"(streams={len(members)})\n{note}"
-                  f"frames_in={images.shape[0]}  {images.shape[2]}x{images.shape[1]}px")
-        return (out, report)
-
-
-class MiniMaxH3NativeAudioLock:
-    """Lock the ORIGINAL audio into an H3 AV latent so the face lip-syncs to it.
-
-    Encodes `audio` into H3's audio stream, fixes that stream at its clean
-    timestep, and masks sampling so only the video denoises while cross-attending
-    to the audio — which is what shapes the mouth. Feed an isolated vocals track
-    for the cleanest signal; mux the full original audio at the save node.
+    Wire the H3 AV latent (from MiniMaxH3ReferenceToVideo) into `av_latent`, the
+    upscaled face clip into `images`, the H3 VIDEO vae into `vae`, the crop node's
+    `track_data`, and (optionally) the source `audio` + `audio_vae` for lip-sync.
+    Outputs the patched `model` (-> BasicGuider / BasicScheduler) and the prepared
+    `av_latent` (-> SamplerCustomAdvanced.latent_image). Set overall strength with
+    BasicScheduler's `denoise` (NOT SplitSigmas).
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -1161,76 +1112,18 @@ class MiniMaxH3NativeAudioLock:
             "required": {
                 "model": ("MODEL",),
                 "av_latent": ("LATENT",),
-                "audio_vae": ("VAE",),
-                "audio": ("AUDIO",),
-            },
-        }
-
-    RETURN_TYPES = ("MODEL", "LATENT", "AUDIO")
-    RETURN_NAMES = ("model", "av_latent", "exact_audio")
-    FUNCTION = "lock_audio"
-    CATEGORY = "masking/face_gate"
-    DESCRIPTION = ("Encode exact user audio into a MiniMax H3 AV latent and denoise "
-                   "video only, so the generated face lip-syncs to that audio.")
-
-    def lock_audio(self, model, av_latent, audio_vae, audio):
-        import comfy.nested_tensor
-        import torchaudio
-        samples = av_latent.get("samples")
-        if samples is None or not getattr(samples, "is_nested", False):
-            raise ValueError("MiniMaxH3NativeAudioLock requires a joint MiniMax H3 AV latent.")
-
-        video_latent, target_audio_template = samples.unbind()[:2]
-        waveform = audio["waveform"][:1]
-        sample_rate = int(audio["sample_rate"])
-        vae_rate = int(getattr(audio_vae, "audio_sample_rate", 32000))
-        if sample_rate != vae_rate:
-            waveform = torchaudio.functional.resample(waveform, sample_rate, vae_rate)
-
-        exact_audio_latent = audio_vae.encode(waveform.movedim(1, -1))
-        target_t = target_audio_template.shape[-1]
-        if exact_audio_latent.shape[-1] > target_t:
-            exact_audio_latent = exact_audio_latent[..., :target_t]
-        elif exact_audio_latent.shape[-1] < target_t:
-            exact_audio_latent = F.pad(exact_audio_latent, (0, target_t - exact_audio_latent.shape[-1]))
-
-        locked = dict(av_latent)
-        locked["samples"] = comfy.nested_tensor.NestedTensor((video_latent, exact_audio_latent))
-        locked["noise_mask"] = comfy.nested_tensor.NestedTensor(
-            (torch.ones_like(video_latent), torch.zeros_like(exact_audio_latent)))
-
-        patched_model = model.clone()
-        transformer_options = patched_model.model_options["transformer_options"] = (
-            patched_model.model_options.get("transformer_options", {}).copy())
-        transformer_options["minimax_h3_lock_audio_clean"] = True
-        return (patched_model, locked, audio)
-
-
-class H3PerFrameDenoise:
-    """Scale denoise per frame, inversely to face size, via the latent noise mask.
-
-    A tiny face has no detail to preserve and wants a strong pass (synthesise);
-    a large face has real detail and wants a gentle pass (don't rewrite). One
-    sigma schedule can't serve both, so this varies the noise mask along time.
-    Face size per frame comes from FACE_TRACK_DATA (the crop node's `face_px`).
-    Place AFTER MiniMaxH3NativeAudioLock so the audio-side zeros are preserved.
-    """
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "av_latent": ("LATENT",),
+                "images": ("IMAGE",),
+                "vae": ("VAE",),
                 "track_data": ("FACE_TRACK_DATA",),
                 "strength_small_face": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": "Denoise multiplier where the face is SMALLEST. 1.0 = the full "
                                "denoise set on BasicScheduler."}),
                 "strength_large_face": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Denoise multiplier where the face is LARGEST. Lower preserves the "
-                               "detail those frames already have (and keeps edges matching)."}),
+                    "tooltip": "Denoise multiplier where the face is LARGEST. Lower preserves detail "
+                               "(and keeps edges matching)."}),
                 "scale_mode": (["absolute_px", "relative_to_clip"], {"default": "absolute_px",
-                    "tooltip": "absolute_px: strength set by real source-pixel face height via "
-                               "face_px_small/large (safe across a batch). relative_to_clip: "
-                               "normalise to this clip's own min/max face size."}),
+                    "tooltip": "absolute_px: strength from real source-pixel face height via "
+                               "face_px_small/large. relative_to_clip: normalise to this clip's own range."}),
                 "face_px_small": ("FLOAT", {"default": 30.0, "min": 4.0, "max": 400.0, "step": 1.0,
                     "tooltip": "Face height (source px) at/below which strength_small_face applies."}),
                 "face_px_large": ("FLOAT", {"default": 120.0, "min": 8.0, "max": 800.0, "step": 1.0,
@@ -1238,36 +1131,95 @@ class H3PerFrameDenoise:
                 "gamma": ("FLOAT", {"default": 1.0, "min": 0.2, "max": 4.0, "step": 0.1,
                     "tooltip": ">1 keeps strength high until the face is genuinely large; <1 drops early."}),
                 "smooth_frames": ("INT", {"default": 9, "min": 1, "max": 61, "step": 2,
-                    "tooltip": "Smooth the strength curve over time; an abrupt denoise change between "
-                               "neighbouring frames reads as a texture pop, so be generous."}),
+                    "tooltip": "Smooth the strength curve over time; abrupt denoise changes read as a pop."}),
+            },
+            "optional": {
+                "audio_vae": ("VAE", {"tooltip": "H3 AUDIO vae. Needed with `audio` for lip-sync."}),
+                "audio": ("AUDIO", {"tooltip": "Source audio (or isolated vocals). Omit to skip lip-sync."}),
             },
         }
 
-    RETURN_TYPES = ("LATENT", "STRING")
-    RETURN_NAMES = ("av_latent", "report")
+    RETURN_TYPES = ("MODEL", "LATENT", "STRING")
+    RETURN_NAMES = ("model", "av_latent", "report")
     FUNCTION = "run"
     CATEGORY = "masking/face_gate"
-    DESCRIPTION = "Per-frame denoise strength for MiniMax H3, scaled inversely to face size."
+    DESCRIPTION = ("MiniMax H3 face-refine setup: img2img inject + audio lip-sync + "
+                   "per-frame denoise, in one node.")
 
-    def run(self, av_latent, track_data, strength_small_face, strength_large_face,
-            face_px_small, face_px_large, gamma, smooth_frames, scale_mode="absolute_px"):
+    def run(self, model, av_latent, images, vae, track_data,
+            strength_small_face, strength_large_face, face_px_small, face_px_large,
+            gamma, smooth_frames, scale_mode="absolute_px", audio_vae=None, audio=None):
         import comfy.nested_tensor
+        reports = []
+
+        # ── 1. inject the face clip into the VIDEO stream (img2img) ──────────────
         samples = av_latent.get("samples")
-        if samples is None or not (
-                isinstance(samples, comfy.nested_tensor.NestedTensor)
+        if samples is None:
+            raise KeyError('LATENT is missing "samples".')
+        if not (isinstance(samples, comfy.nested_tensor.NestedTensor)
                 or getattr(samples, "is_nested", False)):
-            raise ValueError("Expected a MiniMax H3 joint AV latent (NestedTensor).")
-
+            raise ValueError("Expected a MiniMax H3 joint AV latent (NestedTensor). Feed the "
+                             "LATENT output of MiniMaxH3ReferenceToVideo / EmptyMiniMaxH3LatentAV.")
         members = list(samples.unbind())
-        video = members[0]
-        latent_t = video.shape[-3]
+        video_tmpl = members[0]
+        encoded = vae.encode(images[..., :3])
+        if encoded.ndim == 4:  # [B,C,H,W] -> [1,C,T,H,W]
+            encoded = encoded.unsqueeze(0).movedim(1, 2)
+        tgt_t, tgt_h, tgt_w = video_tmpl.shape[-3], video_tmpl.shape[-2], video_tmpl.shape[-1]
+        got_t, got_h, got_w = encoded.shape[-3], encoded.shape[-2], encoded.shape[-1]
+        if (got_h, got_w) != (tgt_h, tgt_w):
+            raise ValueError(f"Spatial latent mismatch: encoded {got_h}x{got_w} but the AV latent "
+                             f"expects {tgt_h}x{tgt_w}. The crop canvas and the H3 node's width/height "
+                             f"must match (both are pixels/16).")
+        if got_t != tgt_t:
+            # crop node with resampler='minimax_h3' pads to 17k+5, so this is a guard.
+            if got_t > tgt_t:
+                encoded = encoded[..., :tgt_t, :, :]
+            else:
+                padt = video_tmpl[..., : tgt_t - got_t, :, :].to(encoded.device, encoded.dtype)
+                encoded = torch.cat([encoded, padt], dim=-3)
+            reports.append(f"WARNING temporal mismatch enc t={got_t} vs latent t={tgt_t} "
+                           f"(set crop resampler='minimax_h3')")
+        video_latent = encoded.to(video_tmpl.device, video_tmpl.dtype)
+        members[0] = video_latent
+        cur = dict(av_latent)
+        cur["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
+        reports.append(f"inject video latent {tuple(video_latent.shape)}")
 
+        # ── 2. lock the ORIGINAL audio (lip-sync), denoise video only ───────────
+        out_model = model
+        if audio is not None and audio_vae is not None:
+            import torchaudio
+            if len(members) < 2:
+                raise ValueError("AV latent has no audio stream to lock.")
+            audio_tmpl = members[1]
+            waveform = audio["waveform"][:1]
+            sr = int(audio["sample_rate"])
+            vae_rate = int(getattr(audio_vae, "audio_sample_rate", 32000))
+            if sr != vae_rate:
+                waveform = torchaudio.functional.resample(waveform, sr, vae_rate)
+            exact_audio = audio_vae.encode(waveform.movedim(1, -1))
+            at = audio_tmpl.shape[-1]
+            if exact_audio.shape[-1] > at:
+                exact_audio = exact_audio[..., :at]
+            elif exact_audio.shape[-1] < at:
+                exact_audio = F.pad(exact_audio, (0, at - exact_audio.shape[-1]))
+            cur["samples"] = comfy.nested_tensor.NestedTensor((video_latent, exact_audio))
+            cur["noise_mask"] = comfy.nested_tensor.NestedTensor(
+                (torch.ones_like(video_latent), torch.zeros_like(exact_audio)))
+            out_model = model.clone()
+            topts = out_model.model_options["transformer_options"] = (
+                out_model.model_options.get("transformer_options", {}).copy())
+            topts["minimax_h3_lock_audio_clean"] = True
+            reports.append("lipsync: locked audio, video-only denoise")
+        else:
+            reports.append("lipsync: skipped (no audio)")
+
+        # ── 3. per-frame denoise via the video noise mask ───────────────────────
+        latent_t = video_latent.shape[-3]
         entries = track_data.get("entries", [])
         if not entries:
             raise ValueError("track_data has no entries.")
-        # Per clip-frame source face height (px), holding the last known value
-        # across pad/absent frames so the curve stays smooth. Length == clip
-        # length == processed frame count, i.e. it lines up with the latent time.
         face_list, last = [], float(face_px_small)
         for e in entries:
             fp = e.get("face_px")
@@ -1276,7 +1228,6 @@ class H3PerFrameDenoise:
             last = fp
             face_list.append(float(fp))
         face = np.array(face_list, dtype=np.float64)
-
         if scale_mode == "relative_to_clip":
             lo, hi = float(face.min()), float(face.max())
         else:
@@ -1287,7 +1238,6 @@ class H3PerFrameDenoise:
             t = np.clip((face - lo) / (hi - lo), 0.0, 1.0)
         t = t ** float(gamma)
         strength = strength_small_face + (strength_large_face - strength_small_face) * t
-
         k = int(smooth_frames)
         if k > 1 and strength.size > 1:
             r = k // 2
@@ -1297,33 +1247,101 @@ class H3PerFrameDenoise:
             ker /= ker.sum()
             strength = np.convolve(np.pad(strength, r, mode="edge"), ker, mode="valid")
         strength = np.clip(strength, 0.0, 1.0)
-
-        # per clip-frame -> per latent-frame
         s = torch.from_numpy(strength).float().view(1, 1, -1)
         s = F.interpolate(s, size=int(latent_t), mode="linear", align_corners=True)
-        s = s.view(1, 1, int(latent_t), 1, 1).to(video.device, torch.float32)
-        vmask = s.expand(video.shape[0], video.shape[1], latent_t,
-                         video.shape[-2], video.shape[-1]).contiguous()
-
-        prev = av_latent.get("noise_mask")
+        s = s.view(1, 1, int(latent_t), 1, 1).to(video_latent.device, torch.float32)
+        vmask = s.expand(video_latent.shape[0], video_latent.shape[1], latent_t,
+                         video_latent.shape[-2], video_latent.shape[-1]).contiguous()
+        prev = cur.get("noise_mask")
         if prev is not None and (isinstance(prev, comfy.nested_tensor.NestedTensor)
                                  or getattr(prev, "is_nested", False)):
             pm = list(prev.unbind())          # keep the audio side (zeros) intact
             pm[0] = vmask.to(pm[0].dtype)
-            new_mask = comfy.nested_tensor.NestedTensor(tuple(pm))
+            cur["noise_mask"] = comfy.nested_tensor.NestedTensor(tuple(pm))
         else:
-            audio_zero = torch.zeros_like(members[1]) if len(members) > 1 else None
-            new_mask = comfy.nested_tensor.NestedTensor(
-                (vmask.to(video.dtype),) + ((audio_zero,) if audio_zero is not None else ()))
+            mem2 = list(cur["samples"].unbind())
+            audio_zero = torch.zeros_like(mem2[1]) if len(mem2) > 1 else None
+            cur["noise_mask"] = comfy.nested_tensor.NestedTensor(
+                (vmask.to(video_latent.dtype),) + ((audio_zero,) if audio_zero is not None else ()))
+        reports.append(f"denoise {strength.max():.2f}..{strength.min():.2f} over {len(strength)} "
+                       f"frames ({latent_t} latent)")
 
-        out = dict(av_latent)
-        out["noise_mask"] = new_mask
-        report = (f"per-frame denoise: face {face.min():.0f}-{face.max():.0f}px, ramp "
-                  f"{lo:.0f}-{hi:.0f}px ({scale_mode}) -> strength {strength.max():.2f} "
-                  f"(smallest) .. {strength.min():.2f} (largest) over {len(strength)} "
-                  f"frames, {latent_t} latent steps.")
-        print("[H3PerFrameDenoise] " + report)
-        return (out, report)
+        report = "[H3FaceRefine] " + " | ".join(reports)
+        print(report)
+        return (out_model, cur, report)
+
+
+class FaceTrackAudioSlice:
+    """Reindex source audio to a gated face clip's frames — for correct H3 lip-sync.
+
+    FaceTrackCropAndGate keeps only the small-face frames (often several
+    non-contiguous runs) and concatenates them, so the clip fed to H3 is a SUBSET
+    of the timeline in clip order — NOT the whole video. H3's audio lock aligns
+    audio to video 1:1, so feeding the whole track would sync the generated mouths
+    to the wrong words. This builds the matching audio: for each clip frame it
+    takes a 1/target_fps-second window from the source at that frame's ORIGINAL
+    time (source frame index ÷ source_fps), and concatenates them in clip order
+    (silence for pad/absent frames). The result is target_fps-framed audio that
+    lines up 1:1 with the clip — wire it into H3FaceRefine's `audio` (and the H3
+    reference node's `ref_audio`). Mux the FULL original audio at the save node.
+
+    For a 24fps source and one contiguous run this is just a clean slice; for
+    other fps / multiple runs it resamples per frame onto H3's 24fps grid.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "audio": ("AUDIO",),
+                "track_data": ("FACE_TRACK_DATA",),
+                "source_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 240.0, "step": 0.001,
+                    "tooltip": "FPS of the SOURCE video (wire VHS_VideoInfo source_fps). Maps each "
+                               "gated frame's index to its time in the original audio."}),
+                "target_fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 1.0,
+                    "tooltip": "FPS H3 interprets the clip at (24). Each clip frame gets a "
+                               "1/target_fps-second audio window."}),
+            },
+        }
+
+    RETURN_TYPES = ("AUDIO", "STRING")
+    RETURN_NAMES = ("audio", "report")
+    FUNCTION = "slice"
+    CATEGORY = "masking/face_gate"
+    DESCRIPTION = ("Reindex source audio to a gated face clip's frames so H3 lip-sync "
+                   "matches (per clip frame: a window from the source at that frame's "
+                   "original time; silence for pad frames).")
+
+    def slice(self, audio, track_data, source_fps=24.0, target_fps=24.0):
+        wav = audio.get("waveform")
+        sr = int(audio.get("sample_rate", 0))
+        entries = track_data.get("entries", [])
+        if wav is None or sr <= 0 or not entries:
+            return (audio, "[FaceTrackAudioSlice] passthrough (missing waveform/sr/entries)")
+        if source_fps <= 0:
+            source_fps = 24.0
+        S = wav.shape[-1]
+        win = max(1, int(round(sr / float(target_fps))))   # samples per output frame
+        lead = wav.shape[:-1]                                # [B, C]
+        segs, n_present, n_pad = [], 0, 0
+        for e in entries:
+            if e.get("present", False) and e.get("frame", -1) >= 0:
+                s0 = int(round((e["frame"] / float(source_fps)) * sr))
+                s0 = max(0, min(s0, S))
+                seg = wav[..., s0:s0 + win]
+                if seg.shape[-1] < win:                      # zero-pad a short tail
+                    pad = torch.zeros(*lead, win - seg.shape[-1], dtype=wav.dtype, device=wav.device)
+                    seg = torch.cat([seg, pad], dim=-1)
+                segs.append(seg)
+                n_present += 1
+            else:
+                segs.append(torch.zeros(*lead, win, dtype=wav.dtype, device=wav.device))
+                n_pad += 1
+        out = torch.cat(segs, dim=-1)
+        report = (f"[FaceTrackAudioSlice] {len(entries)} clip frames "
+                  f"({n_present} present, {n_pad} pad) -> {out.shape[-1]} samples @ {sr}Hz "
+                  f"({out.shape[-1] / sr:.2f}s) src_fps={source_fps} target_fps={target_fps}")
+        print(report)
+        return ({"waveform": out, "sample_rate": sr}, report)
 
 
 NODE_CLASS_MAPPINGS = {
@@ -1335,9 +1353,8 @@ NODE_CLASS_MAPPINGS = {
     "FaceTrackRunCount": FaceTrackRunCount,
     "FaceTrackPasteBack": FaceTrackPasteBack,
     "MaskHasFace": MaskHasFace,
-    "H3InjectVideoLatent": H3InjectVideoLatent,
-    "MiniMaxH3NativeAudioLock": MiniMaxH3NativeAudioLock,
-    "H3PerFrameDenoise": H3PerFrameDenoise,
+    "H3FaceRefine": H3FaceRefine,
+    "FaceTrackAudioSlice": FaceTrackAudioSlice,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FaceSizeGateMask": "Face Size Gate (Mask)",
@@ -1348,7 +1365,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FaceTrackRunCount": "Face Track Run Count",
     "FaceTrackPasteBack": "Face Track Paste Back (coherent)",
     "MaskHasFace": "Mask Has Face (bool)",
-    "H3InjectVideoLatent": "H3 Inject Video Latent (img2img)",
-    "MiniMaxH3NativeAudioLock": "MiniMax H3 Native Audio Lock (lipsync)",
-    "H3PerFrameDenoise": "H3 Per-Frame Denoise",
+    "H3FaceRefine": "MiniMax H3 Face Refine",
+    "FaceTrackAudioSlice": "Face Track Audio Slice",
 }

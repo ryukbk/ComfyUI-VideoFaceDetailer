@@ -286,12 +286,18 @@
         {
           "name": "width",
           "type": "INT",
-          "link": null
+          "link": null,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": null
+          "link": null,
+          "widget": {
+            "name": "height"
+          }
         }
       ],
       "outputs": [
@@ -337,7 +343,8 @@
         "stretch",
         "0, 0, 0",
         "center",
-        32
+        32,
+        "cpu"
       ]
     },
     {
@@ -558,17 +565,26 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 15
+          "link": 15,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 16
+          "link": 16,
+          "widget": {
+            "name": "height"
+          }
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 17
+          "link": 17,
+          "widget": {
+            "name": "length"
+          }
         }
       ],
       "outputs": [
@@ -601,6 +617,9 @@
         "Node name for S&R": "LTXVImgToVideo"
       },
       "widgets_values": [
+        768,
+        512,
+        97,
         1,
         0.4
       ]
@@ -633,7 +652,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 20
+          "link": 20,
+          "widget": {
+            "name": "frame_rate"
+          }
         }
       ],
       "outputs": [
@@ -657,7 +679,9 @@
       "properties": {
         "Node name for S&R": "LTXVConditioning"
       },
-      "widgets_values": []
+      "widgets_values": [
+        25.0
+      ]
     },
     {
       "id": 15,
@@ -830,7 +854,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 31
+          "link": 31,
+          "widget": {
+            "name": "frame_rate"
+          }
         },
         {
           "name": "audio",
@@ -849,13 +876,19 @@
       "properties": {
         "Node name for S&R": "VHS_VideoCombine"
       },
-      "widgets_values": [
-        0,
-        "face_enhanced",
-        "video/h264-mp4",
-        false,
-        true
-      ]
+      "widgets_values": {
+        "frame_rate": 30,
+        "loop_count": 0,
+        "filename_prefix": "face_enhanced",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": ""
+      }
     },
     {
       "id": 22,

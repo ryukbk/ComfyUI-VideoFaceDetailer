@@ -1,6 +1,6 @@
 {
   "last_node_id": 26,
-  "last_link_id": 43,
+  "last_link_id": 42,
   "nodes": [
     {
       "id": 1,
@@ -26,7 +26,7 @@
             9,
             11,
             35,
-            40
+            39
           ],
           "slot_index": 0
         },
@@ -225,8 +225,7 @@
           "name": "masks",
           "type": "MASK",
           "links": [
-            6,
-            38
+            6
           ],
           "slot_index": 0
         }
@@ -320,7 +319,7 @@
           "links": [
             10,
             28,
-            43
+            42
           ],
           "slot_index": 0
         },
@@ -412,7 +411,10 @@
         {
           "name": "fps",
           "type": "FLOAT",
-          "link": 10
+          "link": 10,
+          "widget": {
+            "name": "fps"
+          }
         }
       ],
       "outputs": [],
@@ -420,7 +422,8 @@
         "Node name for S&R": "SAM3_TrackPreview"
       },
       "widgets_values": [
-        0.5
+        0.5,
+        24.0
       ]
     },
     {
@@ -488,6 +491,20 @@
           "type": "INT",
           "links": [],
           "slot_index": 4
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": [],
+          "slot_index": 5
+        },
+        {
+          "name": "enhanced",
+          "type": "BOOLEAN",
+          "links": [
+            38
+          ],
+          "slot_index": 6
         }
       ],
       "properties": {
@@ -498,9 +515,9 @@
         "width",
         0.1,
         0.1,
-        10.0,
+        0.1,
         0.0,
-        0.02,
+        0.0,
         0.3,
         0.4,
         0.5,
@@ -530,12 +547,18 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 14
+          "link": 14,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 15
+          "link": 15,
+          "widget": {
+            "name": "height"
+          }
         }
       ],
       "outputs": [
@@ -571,11 +594,14 @@
         "Node name for S&R": "ImageResizeKJv2"
       },
       "widgets_values": [
+        512,
+        512,
         "lanczos",
         "stretch",
         "0, 0, 0",
         "center",
-        32
+        32,
+        "cpu"
       ]
     },
     {
@@ -796,17 +822,26 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 23
+          "link": 23,
+          "widget": {
+            "name": "width"
+          }
         },
         {
           "name": "height",
           "type": "INT",
-          "link": 24
+          "link": 24,
+          "widget": {
+            "name": "height"
+          }
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 25
+          "link": 25,
+          "widget": {
+            "name": "length"
+          }
         }
       ],
       "outputs": [
@@ -839,6 +874,9 @@
         "Node name for S&R": "LTXVImgToVideo"
       },
       "widgets_values": [
+        768,
+        512,
+        97,
         1,
         0.4
       ]
@@ -871,7 +909,10 @@
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 28
+          "link": 28,
+          "widget": {
+            "name": "frame_rate"
+          }
         }
       ],
       "outputs": [
@@ -895,7 +936,9 @@
       "properties": {
         "Node name for S&R": "LTXVConditioning"
       },
-      "widgets_values": []
+      "widgets_values": [
+        25.0
+      ]
     },
     {
       "id": 15,
@@ -1033,7 +1076,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            41
+            40
           ],
           "slot_index": 0
         }
@@ -1048,50 +1091,6 @@
       ]
     },
     {
-      "id": 25,
-      "type": "MaskHasFace",
-      "pos": [
-        3600,
-        440
-      ],
-      "size": [
-        320,
-        200
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "masks",
-          "type": "MASK",
-          "link": 38
-        }
-      ],
-      "outputs": [
-        {
-          "name": "has_face",
-          "type": "BOOLEAN",
-          "links": [
-            39
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "frames_with_face",
-          "type": "INT",
-          "links": [],
-          "slot_index": 1
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "MaskHasFace"
-      },
-      "widgets_values": [
-        1
-      ]
-    },
-    {
       "id": 26,
       "type": "LazySwitchKJ",
       "pos": [
@@ -1103,23 +1102,26 @@
         200
       ],
       "flags": {},
-      "order": 20,
+      "order": 19,
       "mode": 0,
       "inputs": [
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 39
+          "link": 38,
+          "widget": {
+            "name": "switch"
+          }
         },
         {
           "name": "on_false",
           "type": "*",
-          "link": 40
+          "link": 39
         },
         {
           "name": "on_true",
           "type": "*",
-          "link": 41
+          "link": 40
         }
       ],
       "outputs": [
@@ -1127,7 +1129,7 @@
           "name": "*",
           "type": "*",
           "links": [
-            42
+            41
           ],
           "slot_index": 0
         }
@@ -1135,7 +1137,9 @@
       "properties": {
         "Node name for S&R": "LazySwitchKJ"
       },
-      "widgets_values": []
+      "widgets_values": [
+        false
+      ]
     },
     {
       "id": 21,
@@ -1149,18 +1153,21 @@
         200
       ],
       "flags": {},
-      "order": 21,
+      "order": 20,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 42
+          "link": 41
         },
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 43
+          "link": 42,
+          "widget": {
+            "name": "frame_rate"
+          }
         },
         {
           "name": "audio",
@@ -1179,13 +1186,19 @@
       "properties": {
         "Node name for S&R": "VHS_VideoCombine"
       },
-      "widgets_values": [
-        0,
-        "face_enhanced_track",
-        "video/h264-mp4",
-        false,
-        true
-      ]
+      "widgets_values": {
+        "frame_rate": 30,
+        "loop_count": 0,
+        "filename_prefix": "face_enhanced_track",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": ""
+      }
     }
   ],
   "links": [
@@ -1487,22 +1500,14 @@
     ],
     [
       38,
-      5,
-      0,
-      25,
-      0,
-      "MASK"
-    ],
-    [
-      39,
-      25,
-      0,
+      7,
+      6,
       26,
       0,
       "BOOLEAN"
     ],
     [
-      40,
+      39,
       1,
       0,
       26,
@@ -1510,7 +1515,7 @@
       "IMAGE"
     ],
     [
-      41,
+      40,
       20,
       0,
       26,
@@ -1518,7 +1523,7 @@
       "IMAGE"
     ],
     [
-      42,
+      41,
       26,
       0,
       21,
@@ -1526,7 +1531,7 @@
       "*"
     ],
     [
-      43,
+      42,
       22,
       0,
       21,

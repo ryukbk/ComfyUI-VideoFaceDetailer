@@ -92,7 +92,7 @@ in ComfyUI). The **example workflows** additionally require:
 | Native **SAM 3 / 3.1** nodes (bundled with recent ComfyUI) | `SAM3_VideoTrack`, `SAM3_TrackToMask`, `SAM3_TrackPreview` |
 | Native **LTXV** nodes (bundled with ComfyUI) | the video resample pass (LTX workflows) |
 | Native **MiniMax H3** nodes (`comfy_extras/nodes_minimax_h3.py`, bundled with a recent ComfyUI) | the video resample pass (H3 workflow): `MiniMaxH3ReferenceToVideo`, `UNETLoader`/`CLIPLoader`/`VAELoader`, `SamplerCustomAdvanced`, etc. |
-| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `GetImageSizeAndCount`, `GetMaskSizeAndCount`, `LazySwitchKJ` |
+| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `LazySwitchKJ` |
 | [**ComfyUI-VideoHelperSuite**](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) | `VHS_LoadVideo`, `VHS_VideoCombine`, `VHS_VideoInfo` |
 
 You also need a SAM 3 / 3.1 checkpoint plus **either** an LTXV checkpoint **or**
@@ -144,11 +144,11 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `max_threshold_percent` | FLOAT | 10.0 | **upper bound**, as a **percent** (same unit as the `report`) — enhance a frame **only while** the face is *smaller* than this percent of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. `12` = faces under 12% of the frame). Fine grain (`0.01`) so tiny area values like `1.38%` are settable. |
 | `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a **percent** in the same measure as `threshold_type` (matching `max_threshold_percent`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_threshold_percent` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
 | `hysteresis_percent` | FLOAT | 0.0 | dead-band around **both** thresholds, as a **percent** (same unit as the thresholds), to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
-| `padding` | FLOAT | 0.3 | context margin around the face box. Keep **low** (0–0.1) if you find LTX enlarges the face (see Limitations) |
+| `padding` | FLOAT | 0.1 | context margin around the face box. **Low (default 0.1)** puts more of the crop on the face → more detail at the same `target_size` (crisper). Raise it if the face gets clipped on fast motion or the model needs more context; high values can let the resampler reframe/enlarge the face (see Limitations) |
 | `smooth_alpha` | FLOAT | 1.0 | crop **center** smoothing (EMA). **1.0 (default) = follow the face exactly, no positional lag** (the enhanced face tracks the head). Lower = steadier framing but lags fast head motion (reads as the face being out of sync); drop toward `0.7` only if raw mask noise makes the crop jitter |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
 | `size_smooth_alpha` | FLOAT | 0.4 | crop **size** smoothing (EMA) — the actual *wobble* control, independent of position |
-| `resampler` | choice | ltx | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **ltx** → `8n+1` (LTXVImgToVideo); **minimax_h3** → `17k+5` (MiniMax H3). The padded frame count is what you wire into the resampler's `length` (use the `frame_count` output), so paste-back stays 1:1. Leave `ltx` for the LTX workflows. |
+| `resampler` | choice | minimax_h3 | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **minimax_h3** (default) → `17k+5` (MiniMax H3); **ltx** → `8n+1` (LTXVImgToVideo). The padded frame count is what you wire into the resampler's `length` (use the `frame_count` output), so paste-back stays 1:1. Set **ltx** when feeding the LTX workflows. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
 (INT), `enhanced_frames` (INT), `num_runs` (INT), `frame_count` (INT — the
@@ -489,8 +489,9 @@ Extra branches are safe no-ops.
 - **The resampler can change the face** — it's a generative pass. Use low denoise
   and low padding to keep identity/scale stable.
 - **LTX clip-length rules:** the crop node pads its clip to a valid LTX length
-  (`8n+1`) automatically; keep the example's `GetImageSizeAndCount → length`
-  wiring intact so paste-back counts line up.
+  (`8n+1`) automatically and exposes it as `frame_count`; keep the example's
+  `frame_count → LTXVImgToVideo.length` wiring intact so paste-back counts line up
+  (no `GetImageSizeAndCount` node is needed).
 - **Widget order matters** when hand-editing workflow JSON — values are
   positional.
 

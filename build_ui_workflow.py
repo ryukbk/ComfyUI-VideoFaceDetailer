@@ -77,7 +77,7 @@ SPEC = {
     "FaceTrackSelectRun": {
         "inputs": [("face_clip", "IMAGE"), ("track_data", "FACE_TRACK_DATA")],
         "outputs": [("run_clip", "IMAGE"), ("run_track_data", "FACE_TRACK_DATA"),
-                    ("target_size", "INT"), ("enhanced_frames", "INT")],
+                    ("target_size", "INT"), ("enhanced_frames", "INT"), ("frame_count", "INT")],
     },
     "FaceTrackRunCount": {
         "inputs": [("track_data", "FACE_TRACK_DATA")],
@@ -245,28 +245,23 @@ NODES_TRACK = {
     "3":  ("CLIPTextEncode", ["face"], {"clip": ("2", 1)}),
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
-    # Inline mask count/size preview: shows "count x W x H" on the node, and
-    # passes the mask through to the gate. This is the mask that actually feeds
-    # node 7, so it reflects exactly what the gate sees (unlike SAM3_TrackPreview,
-    # which reflects the raw track_data from node 4).
-    "24": ("GetMaskSizeAndCount", [], {"mask": ("5", 0)}),
     # Video Info -> source_fps drives all frame-rate fields below.
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     # fps is now an input (driven by source_fps); no fps widget value remains.
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4],
-           {"images": ("1", 0), "mask_track": ("24", 0)}),
+    # mask_track wired straight from SAM3_TrackToMask (no GetMaskSizeAndCount needed —
+    # the gate's `report` output already surfaces frame/size counts).
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "ltx"],
+           {"images": ("1", 0), "mask_track": ("5", 0)}),
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
-    # Count the upscaled face-clip frames; drives LTX length so it matches exactly.
-    "23": ("GetImageSizeAndCount", [], {"image": ("8", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
     "12": ("CLIPTextEncode", ["blurry, low quality, distorted, deformed, flicker"], {"clip": ("10", 1)}),
-    # length is now an input (driven by frame count); remaining widgets: batch_size, strength.
+    # length driven by FaceTrackCropAndGate.frame_count (out5); remaining widgets: batch_size, strength.
     "13": ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
            {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2),
-            "image": ("8", 0), "width": ("7", 2), "height": ("7", 2), "length": ("23", 3)}),
+            "image": ("8", 0), "width": ("7", 2), "height": ("7", 2), "length": ("7", 5)}),
     # frame_rate is now an input (driven by source_fps); no frame_rate widget value remains.
     "14": ("LTXVConditioning", [25.0], {"positive": ("13", 0), "negative": ("13", 1), "frame_rate": ("22", 0)}),
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
@@ -289,8 +284,8 @@ NODES_TRACK = {
 }
 
 LAYOUT_TRACK = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
-                "24": (3, 1), "22": (1, 0), "9": (3, 3), "7": (4, 0),
-                "8": (5, 0), "23": (5, 1), "10": (4, 3), "11": (5, 3), "12": (5, 4),
+                "22": (1, 0), "9": (3, 3), "7": (4, 0),
+                "8": (5, 0), "10": (4, 3), "11": (5, 3), "12": (5, 4),
                 "13": (6, 0), "14": (7, 0), "15": (8, 0), "16": (9, 0), "20": (10, 0),
                 "26": (11, 1), "21": (12, 0)}
 
@@ -305,15 +300,14 @@ NODES_PERFACE = {
            {"images": ("1", 0), "masks": ("4", 0)}),
     "6":  ("ImageResizeKJv2", [1024, 1024, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("5", 0)}),
-    # Count the upscaled face frames; drives LTX length so it matches the crop batch.
-    "23": ("GetImageSizeAndCount", [], {"image": ("6", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face"], {"clip": ("10", 1)}),
     "12": ("CLIPTextEncode", ["blurry, low quality, distorted, deformed"], {"clip": ("10", 1)}),
-    # width/height/length all inputs now: width/height from resize outputs, length from count.
+    # width/height from resize outputs; length driven by FaceCropAndGate.face_count
+    # (out2) directly — no GetImageSizeAndCount node.
     "13": ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
            {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2), "image": ("6", 0),
-            "width": ("6", 1), "height": ("6", 2), "length": ("23", 3)}),
+            "width": ("6", 1), "height": ("6", 2), "length": ("5", 2)}),
     "14": ("LTXVConditioning", [25.0], {"positive": ("13", 0), "negative": ("13", 1)}),
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
            {"model": ("10", 0), "positive": ("14", 0), "negative": ("14", 1), "latent_image": ("13", 2)}),
@@ -327,15 +321,20 @@ NODES_PERFACE = {
 NODES_PERFACE["14"] = ("LTXVConditioning", [25.0],
                        {"positive": ("13", 0), "negative": ("13", 1), "frame_rate": ("22", 0)})
 LAYOUT_PERFACE = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0),
-                  "22": (1, 0), "6": (4, 0), "23": (4, 1), "10": (3, 3), "11": (4, 3),
+                  "22": (1, 0), "6": (4, 0), "10": (3, 3), "11": (4, 3),
                   "12": (4, 4), "13": (5, 0), "14": (6, 0), "15": (7, 0), "16": (8, 0),
                   "20": (9, 0), "21": (10, 0)}
 
 
 def build(node_dict, layout, out_path, groups=None):
+    # Grid spacing. Rows are generous (380) because several nodes render tall on
+    # load (VHS_LoadVideo/VideoCombine previews, the crop/resize widget stacks,
+    # SAM3 previews) — tight rows made them overlap the node below. The one node
+    # that still exceeds a row (MiniMaxH3ReferenceToVideo's multi-section prompt)
+    # is given an empty row beneath it in the layouts.
     def pos(key):
         cx, cy = layout.get(key, (0, 0))
-        return [cx * 360, cy * 220]
+        return [cx * 400, cy * 380]
 
     nodes, links, link_id = [], [], 0
     order = list(node_dict.keys())
@@ -422,7 +421,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "ltx"],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -436,10 +435,10 @@ def _branch_numeric(base, run_index, prev_paste_ref):
         sel: ("FaceTrackSelectRun", [run_index], {"face_clip": ("7", 0), "track_data": ("7", 1)}),
         rsz: ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
               {"image": (sel, 0), "width": (sel, 2), "height": (sel, 2)}),
-        cnt: ("GetImageSizeAndCount", [], {"image": (rsz, 0)}),
+        # length driven by FaceTrackSelectRun.frame_count (out4) — no GetImageSizeAndCount.
         i2v: ("LTXVImgToVideo", [768, 512, 97, 1, 0.4],
               {"positive": ("11", 0), "negative": ("12", 0), "vae": ("10", 2),
-               "image": (rsz, 0), "width": (sel, 2), "height": (sel, 2), "length": (cnt, 3)}),
+               "image": (rsz, 0), "width": (sel, 2), "height": (sel, 2), "length": (sel, 4)}),
         cond: ("LTXVConditioning", [25.0], {"positive": (i2v, 0), "negative": (i2v, 1), "frame_rate": ("22", 0)}),
         ks: ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
              {"model": ("10", 0), "positive": (cond, 0), "negative": (cond, 1), "latent_image": (i2v, 2)}),
@@ -485,13 +484,14 @@ NODES_H3 = {
     "3":  ("CLIPTextEncode", ["face"], {"clip": ("2", 1)}),
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
-    "24": ("GetMaskSizeAndCount", [], {"mask": ("5", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    # resampler="minimax_h3" -> clip padded to H3's 17k+5 grid.
+    # resampler="minimax_h3" -> clip padded to H3's 17k+5 grid. mask_track wired
+    # straight from SAM3_TrackToMask (no GetMaskSizeAndCount; the gate's `report`
+    # output already surfaces frame/size counts).
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4, "minimax_h3"],
-           {"images": ("1", 0), "mask_track": ("24", 0)}),
+           [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "minimax_h3"],
+           {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -596,14 +596,16 @@ LAYOUT_H3 = {
     "1": (0, 0), "22": (1, 0), "45": (2, 0), "40": (3, 0), "41": (4, 0),
     "56": (5, 0), "42": (6, 0), "43": (7, 0), "44": (8, 0), "21": (9, 0),
     # ── INSIDE the subgraph (rows 2+) ──
-    "2": (0, 2), "3": (1, 2), "4": (2, 2), "5": (3, 2), "24": (4, 2), "9": (5, 2),
+    "2": (0, 2), "3": (1, 2), "4": (2, 2), "5": (3, 2), "9": (4, 2),
     "7": (0, 3), "8": (1, 3), "57": (2, 3),
-    "47": (0, 4), "48": (1, 4), "51": (3, 4), "52": (4, 4), "53": (5, 4), "54": (6, 4),
-    "55": (0, 5),
-    "16": (0, 6), "20": (1, 6), "26": (2, 6),
+    # 47 (MiniMaxH3ReferenceToVideo) has a very tall prompt -> keep col 0 row 5
+    # empty beneath it so it doesn't cover the paste/switch row.
+    "47": (0, 4), "48": (2, 4), "51": (3, 4), "52": (4, 4), "53": (5, 4), "54": (6, 4),
+    "55": (2, 5),
+    "20": (0, 6), "26": (1, 6), "16": (2, 6),
 }
 # Nodes that become the subgraph (everything except the outside band above).
-H3_SUBGRAPH_KEYS = ["2", "3", "4", "5", "24", "9", "7", "8", "57",
+H3_SUBGRAPH_KEYS = ["2", "3", "4", "5", "9", "7", "8", "57",
                     "47", "48", "51", "52", "53", "54", "55", "16", "20", "26"]
 GROUPS_H3 = [{
     "title": "H3 Face Detailer — select this group, then 'Convert to Subgraph'",

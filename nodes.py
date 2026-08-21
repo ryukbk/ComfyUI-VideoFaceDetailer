@@ -140,7 +140,7 @@ def _measure(bw, bh, area, kind):
 #   * "minimax_h3" — MiniMax H3 (EmptyMiniMaxH3LatentAV / MiniMaxH3ReferenceToVideo)
 #                    packs 17 pixel frames per latent frame on a 17k+5 grid:
 #                    5, 22, 39, 56, 73, 90, 107, 124, … (min length 5).
-_RESAMPLERS = ("ltx", "minimax_h3")
+_RESAMPLERS = ("minimax_h3", "ltx")
 
 
 def _next_valid_clip_len(n, resampler="ltx"):
@@ -448,7 +448,12 @@ class FaceTrackCropAndGate:
                                                     "max/min_threshold_percent). Stops on/off flicker when the "
                                                     "face hovers at the boundary. ON below (max - hysteresis), "
                                                     "OFF at/above (max + hysteresis)."}),
-                "padding": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "padding": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 2.0, "step": 0.05,
+                                      "tooltip": "Context margin around the face box. LOW (0.1 default) puts "
+                                                 "more of the crop on the face -> more pixels/detail at the same "
+                                                 "target_size (crisper). Raise it if the face gets clipped on fast "
+                                                 "motion or the model needs more context; very high can let the "
+                                                 "resampler reframe/enlarge the face."}),
                 "smooth_alpha": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                            "tooltip": "Crop CENTER smoothing (EMA). 1.0 (default) = follow the face "
                                                       "exactly, no positional lag (recommended — the enhanced face "
@@ -470,12 +475,13 @@ class FaceTrackCropAndGate:
                                                    "(less wobble) but slower to follow genuine size changes; 1.0 "
                                                    "= raw per-frame size (max wobble). Tune this for wobble, "
                                                    "leave smooth_alpha=1.0 to keep position exact."}),
-                "resampler": (list(_RESAMPLERS), {"default": "ltx",
+                "resampler": (list(_RESAMPLERS), {"default": "minimax_h3",
                                         "tooltip": "Which resampler this clip feeds, so it is padded to that "
-                                                   "model's valid frame-count grid: 'ltx' -> 8n+1 "
-                                                   "(LTXVImgToVideo); 'minimax_h3' -> 17k+5 (MiniMax H3 "
-                                                   "EmptyMiniMaxH3LatentAV / MiniMaxH3ReferenceToVideo). "
-                                                   "The padded frame count is what you wire into the "
+                                                   "model's valid frame-count grid: 'minimax_h3' (default) -> "
+                                                   "17k+5 (MiniMax H3 EmptyMiniMaxH3LatentAV / "
+                                                   "MiniMaxH3ReferenceToVideo); 'ltx' -> 8n+1 (LTXVImgToVideo). "
+                                                   "Set 'ltx' when feeding the LTX workflows. The padded frame "
+                                                   "count (frame_count output) is what you wire into the "
                                                    "resampler's length, so paste-back stays 1:1."}),
             },
         }
@@ -492,7 +498,7 @@ class FaceTrackCropAndGate:
 
     def crop(self, images, mask_track, upscale_ratio, threshold_type, max_threshold_percent,
              hysteresis_percent, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
-             min_threshold_percent=0.0, resampler="ltx"):
+             min_threshold_percent=0.0, resampler="minimax_h3"):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -852,12 +858,15 @@ class FaceTrackSelectRun:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT")
-    RETURN_NAMES = ("run_clip", "run_track_data", "target_size", "enhanced_frames")
+    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT")
+    RETURN_NAMES = ("run_clip", "run_track_data", "target_size", "enhanced_frames",
+                    "frame_count")
     FUNCTION = "select"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("Extract one run from a multi-run face clip for an independent "
-                   "LTX pass. Pad each run to its own valid LTX length.")
+                   "LTX pass. Pad each run to its own valid LTX length. frame_count "
+                   "is that padded length — wire it straight into the resampler's "
+                   "length (no GetImageSizeAndCount needed).")
 
     def select(self, face_clip, track_data, run_index):
         entries = track_data.get("entries", [])
@@ -887,7 +896,7 @@ class FaceTrackSelectRun:
                     "out_side": side, "upscale_ratio": float(ratio),
                     "n_real": 0, "n_runs": 0, "clip_length": dummy_len,
                     "resampler": resampler, "ltx_length": dummy_len}
-            return (dummy, data, max(8, int(round(side * ratio))), 0)
+            return (dummy, data, max(8, int(round(side * ratio))), 0, dummy_len)
 
         run_frames = [face_clip[k] for k in sel]
         run_entries = [dict(entries[k]) for k in sel]  # copy; keep frame/x0/y0/win
@@ -909,7 +918,7 @@ class FaceTrackSelectRun:
                 "n_real": n_real, "n_runs": 1, "clip_length": target_len,
                 "resampler": resampler, "ltx_length": target_len}
         target_size = max(8, int(round(out_side * ratio)))
-        return (run_clip, data, target_size, n_real)
+        return (run_clip, data, target_size, n_real, target_len)
 
 
 class FaceTrackRunCount:

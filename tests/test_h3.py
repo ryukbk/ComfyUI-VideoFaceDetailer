@@ -40,13 +40,19 @@ check("h3: present entries carry measure_frac (threshold_type units)",
       all(e.get("measure_frac", 0) > 0 for e in present))
 check("h3: entries count == clip length (paste 1:1)", len(data["entries"]) == clip_len)
 
-# default resampler stays LTX (backward compatible)
-_, data_ltx, _, nr2, _, fc_ltx, enh_ltx, _ = crop.crop(
+# default resampler is now minimax_h3 (17k+5) when omitted
+_, data_def, _, nr2, _, fc_def, enh_def, _ = crop.crop(
     imgs, mt, 2.0, "width", 10.0, 2.0, 0.3, 1.0)
-check("default resampler is ltx", data_ltx.get("resampler") == "ltx" and (data_ltx["clip_length"] - 1) % 8 == 0)
+check("default resampler is minimax_h3", data_def.get("resampler") == "minimax_h3"
+      and (data_def["clip_length"] - 5) % 17 == 0)
+# explicit ltx still pads to the 8n+1 grid
+_, data_ltx, _, _, _, fc_ltx, _, _ = crop.crop(
+    imgs, mt, 2.0, "width", 10.0, 2.0, 0.3, 1.0, resampler="ltx")
+check("explicit ltx pads to 8n+1", data_ltx.get("resampler") == "ltx"
+      and (data_ltx["clip_length"] - 1) % 8 == 0)
 # frame_count output == the padded clip length (drives the resampler `length` directly)
 check("frame_count == clip length", frame_count == face_clip.shape[0] == data["clip_length"]
-      and fc_ltx == data_ltx["clip_length"])
+      and fc_def == data_def["clip_length"] and fc_ltx == data_ltx["clip_length"])
 # enhanced BOOLEAN drives LazySwitchKJ: True when >=1 frame qualified.
 check("enhanced=True when frames qualify", enhanced is True and n_real > 0)
 # report STRING gives width/height/area fraction ranges to help pick thresholds.

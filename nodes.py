@@ -449,11 +449,12 @@ class FaceTrackCropAndGate:
                                                     "face hovers at the boundary. ON below (max - hysteresis), "
                                                     "OFF at/above (max + hysteresis)."}),
                 "padding": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.05}),
-                "smooth_alpha": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01,
-                                           "tooltip": "Crop CENTER smoothing (EMA). 1.0 = follow the face exactly "
-                                                      "(no positional lag); lower = steadier but lags fast moves. "
-                                                      "Use 1.0 if you see the face drift within the crop on fast "
-                                                      "motion."}),
+                "smooth_alpha": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                           "tooltip": "Crop CENTER smoothing (EMA). 1.0 (default) = follow the face "
+                                                      "exactly, no positional lag (recommended — the enhanced face "
+                                                      "tracks the head). Lower = steadier framing but lags fast head "
+                                                      "moves, which reads as the face being out of sync. Drop toward "
+                                                      "0.7 only if raw mask noise makes the crop jitter."}),
                 "max_size_deviation": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 5.0, "step": 0.05,
                                         "tooltip": "How far a single frame's crop size may deviate from the "
                                                    "clip's median face size, as a fraction. With 0.5, each "

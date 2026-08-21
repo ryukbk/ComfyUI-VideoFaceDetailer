@@ -254,7 +254,7 @@ NODES_TRACK = {
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     # fps is now an input (driven by source_fps); no fps widget value remains.
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -422,7 +422,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4],
+    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -490,7 +490,7 @@ NODES_H3 = {
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     # resampler="minimax_h3" -> clip padded to H3's 17k+5 grid.
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "width", 10.0, 0.0, 0.0, 0.3, 0.4, 0.5, 0.4, "minimax_h3"],
+           [2.0, "width", 10.0, 0.0, 0.0, 0.3, 1.0, 0.5, 0.4, "minimax_h3"],
            {"images": ("1", 0), "mask_track": ("24", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],

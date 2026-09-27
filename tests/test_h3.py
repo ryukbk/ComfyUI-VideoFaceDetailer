@@ -1,118 +1,234 @@
-import os
-import sys, torch, numpy as np
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from nodes import FaceTrackCropAndGate, FaceTrackPasteBack, _next_valid_clip_len
+"""FaceTrackCropAndGate + FaceTrackPasteBack on the MiniMax H3 path: clip-length
+grids, the track_data contract, graceful no-ops, and the audio slice."""
+import pytest
+import torch
 
-ok = True
-def check(n, c):
-    global ok; print(("PASS " if c else "FAIL ") + n); ok = ok and c
+from nodes import (FaceTrackAudioSlice, FaceTrackCropAndGate, FaceTrackPasteBack,
+                   _next_valid_clip_len)
 
-# ── length grid helper ──────────────────────────────────────────────────────
-check("ltx grid 8n+1", [_next_valid_clip_len(n, "ltx") for n in (1, 2, 9, 10)] == [1, 9, 9, 17])
-check("h3 grid 17k+5", [_next_valid_clip_len(n, "minimax_h3") for n in (1, 5, 6, 22, 23)] == [5, 5, 22, 22, 39])
-
-# ── build a clip whose tracked face is small (< 10% of width) on 3 frames ────
 W, H, N = 400, 200, 3
-imgs = torch.rand(N, H, W, 3)
-mt = torch.zeros(N, H, W)
-for i in range(N):
-    # 20px face (5% of width) centred; well under the 10% width gate
-    cy, cx = 100, 200
-    mt[i, cy - 10:cy + 10, cx - 10:cx + 10] = 1.0
 
-crop = FaceTrackCropAndGate()
-face_clip, data, target_size, n_real, n_runs, frame_count, enhanced, report = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
-    hysteresis_percent=2.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_percent=0.0, resampler="minimax_h3")
 
-clip_len = face_clip.shape[0]
-check("h3: clip padded onto 17k+5 grid", clip_len == _next_valid_clip_len(n_real, "minimax_h3") and (clip_len - 5) % 17 == 0)
-check("h3: data records resampler", data.get("resampler") == "minimax_h3")
-check("h3: data clip_length matches", data.get("clip_length") == clip_len and data.get("ltx_length") == clip_len)
-present = [e for e in data["entries"] if e.get("present")]
-check("h3: present entries carry face_px", len(present) == n_real and all(e.get("face_px", 0) > 0 for e in present))
-# H3FaceRefine reads these to ramp per-frame denoise between the gate's thresholds.
-check("h3: track_data carries gate window", data.get("threshold_type") == "width"
-      and abs(data.get("max_threshold_frac", -1) - 0.10) < 1e-9
-      and data.get("min_threshold_frac") == 0.0)
-check("h3: present entries carry measure_frac (threshold_type units)",
-      all(e.get("measure_frac", 0) > 0 for e in present))
-check("h3: entries count == clip length (paste 1:1)", len(data["entries"]) == clip_len)
+def small_face_clip():
+    """Three frames, each with a 20px face (5% of width) — well under the 10% gate."""
+    imgs = torch.rand(N, H, W, 3)
+    mask = torch.zeros(N, H, W)
+    for i in range(N):
+        mask[i, 90:110, 190:210] = 1.0
+    return imgs, mask
 
-# default resampler is now minimax_h3 (17k+5) when omitted
-_, data_def, _, nr2, _, fc_def, enh_def, _ = crop.crop(
-    imgs, mt, 2.0, "width", 10.0, 2.0, 0.3, 1.0)
-check("default resampler is minimax_h3", data_def.get("resampler") == "minimax_h3"
-      and (data_def["clip_length"] - 5) % 17 == 0)
-# explicit ltx still pads to the 8n+1 grid
-_, data_ltx, _, _, _, fc_ltx, _, _ = crop.crop(
-    imgs, mt, 2.0, "width", 10.0, 2.0, 0.3, 1.0, resampler="ltx")
-check("explicit ltx pads to 8n+1", data_ltx.get("resampler") == "ltx"
-      and (data_ltx["clip_length"] - 1) % 8 == 0)
-# frame_count output == the padded clip length (drives the resampler `length` directly)
-check("frame_count == clip length", frame_count == face_clip.shape[0] == data["clip_length"]
-      and fc_def == data_def["clip_length"] and fc_ltx == data_ltx["clip_length"])
-# enhanced BOOLEAN drives LazySwitchKJ: True when >=1 frame qualified.
-check("enhanced=True when frames qualify", enhanced is True and n_real > 0)
-# report STRING gives width/height/area fraction ranges to help pick thresholds.
-check("report lists width/height/area ranges",
-      isinstance(report, str) and all(k in report for k in ("width", "height", "area"))
-      and "min–max" in report and "enhanced" in report)
 
-# ── 0 frames qualify -> graceful no-op dummy clip (must NOT raise) ───────────
-# (a) large face only: every face is ABOVE the width threshold.
-big = torch.zeros(N, H, W)
-for i in range(N):
-    big[i, 40:160, 100:300] = 1.0  # 200px face = 50% of width, well above 10%
-noop_clip, noop_data, noop_size, noop_real, noop_runs, noop_fc, noop_enh, noop_rep = crop.crop(
-    imgs, big, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
-    hysteresis_percent=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_percent=0.0, resampler="minimax_h3")
-check("no-op: 0 real frames, does not raise", noop_real == 0 and noop_runs == 0)
-# enhanced=False -> LazySwitchKJ skips the branch, so the dummy never hits Resize.
-check("no-op: enhanced=False (switch skips branch)", noop_enh is False)
-# target_size (slot 2, what Resize width/height MUST read) is floored >= 8 so a
-# no-face clip never feeds 0 into ImageResizeKJv2 ("height and width must be > 0").
-check("no-op: target_size floored >= 8 (never 0)", noop_size >= 8)
-check("no-op: frame_count == dummy clip length (>0)", noop_fc == noop_clip.shape[0] and noop_fc >= 5)
-check("no-op: dummy clip on h3 grid", (noop_clip.shape[0] - 5) % 17 == 0 and noop_clip.shape[0] >= 5)
-check("no-op: all entries present=False", all(not e.get("present") for e in noop_data["entries"]))
-# (b) empty enable window: min_threshold == threshold (the reported bug config).
-_, ew_data, _, ew_real, _, _, ew_enh, _ = crop.crop(
-    imgs, mt, upscale_ratio=2.0, threshold_type="width", max_threshold_percent=10.0,
-    hysteresis_percent=0.0, padding=0.3, smooth_alpha=1.0, max_size_deviation=0.5,
-    size_smooth_alpha=0.4, min_threshold_percent=10.0, resampler="minimax_h3")
-check("no-op: empty enable window (min==max) yields 0 real, no raise", ew_real == 0 and ew_enh is False)
-# paste-back on a no-op clip is a true passthrough (original unchanged).
-paste_noop = FaceTrackPasteBack()
-dummy_proc = torch.rand(noop_clip.shape[0], noop_size, noop_size, 3)
-(pass_out,) = paste_noop.paste(imgs, dummy_proc, noop_data, feather=0.15,
-                               blend_mode="mask", only_present_frames=True,
-                               colour_match=0.0)
-check("no-op: paste-back returns original unchanged", torch.equal(pass_out, imgs))
+def large_face_clip(imgs):
+    """Same frames, but a 200px face (50% of width) — always above the gate."""
+    mask = torch.zeros(N, H, W)
+    for i in range(N):
+        mask[i, 40:160, 100:300] = 1.0
+    return mask
 
-# ── paste back with colour_match on (must run and match count/shape) ─────────
-paste = FaceTrackPasteBack()
-processed = torch.rand(clip_len, target_size, target_size, 3)  # pretend H3 output
-(out,) = paste.paste(imgs, processed, data, feather=0.15, blend_mode="mask",
-                     only_present_frames=True, colour_match=1.0)
-check("paste colour_match keeps frame shape", tuple(out.shape) == (N, H, W, 3))
-check("paste colour_match stays in [0,1]", float(out.min()) >= 0.0 and float(out.max()) <= 1.0)
 
-# ── FaceTrackAudioSlice: audio reindexed to the gated clip frames ────────────
-from nodes import FaceTrackAudioSlice
-sr = 16000
-aud = {"waveform": torch.zeros(1, 2, sr * 3), "sample_rate": sr}   # 3s stereo
-out_aud, _rep = FaceTrackAudioSlice().slice(aud, data, source_fps=24.0, target_fps=24.0)
-win = round(sr / 24.0)
-check("audio slice length == clip_frames * (sr/target_fps)",
-      out_aud["waveform"].shape[-1] == len(data["entries"]) * win)
-check("audio slice keeps sample_rate + channels",
-      out_aud["sample_rate"] == sr and out_aud["waveform"].shape[:2] == (1, 2))
-# empty/missing audio -> passthrough, never crashes
-pass_aud, _ = FaceTrackAudioSlice().slice({"waveform": None, "sample_rate": 0}, data)
-check("audio slice tolerates missing waveform", pass_aud is not None)
+def crop(imgs, mask, **kw):
+    """Every gate parameter is pinned, none inherited.
 
-print("RESULT:", "PASS" if ok else "FAIL")
-sys.exit(0 if ok else 1)
+    These tests assert on the exact window carried in track_data, so they must state it:
+    leaving threshold_type or min_threshold_percent to the node's defaults makes the
+    suite fail whenever a default is retuned, which says nothing about the contract.
+    """
+    kw.setdefault("upscale_ratio", 2.0)
+    kw.setdefault("threshold_type", "width")
+    kw.setdefault("max_threshold_percent", 10.0)
+    kw.setdefault("min_threshold_percent", 0.0)
+    kw.setdefault("hysteresis_percent", 2.0)
+    kw.setdefault("padding", 0.3)
+    kw.setdefault("smooth_alpha", 1.0)
+    return FaceTrackCropAndGate().crop(imgs, mask, **kw)
+
+
+# ── clip-length grids ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("n,expected", [(1, 1), (2, 9), (9, 9), (10, 17)])
+def test_ltx_pads_to_8n_plus_1(n, expected):
+    assert _next_valid_clip_len(n, "ltx") == expected
+
+
+@pytest.mark.parametrize("n,expected", [(1, 5), (5, 5), (6, 22), (22, 22), (23, 39)])
+def test_h3_pads_to_17k_plus_5(n, expected):
+    assert _next_valid_clip_len(n, "minimax_h3") == expected
+
+
+# ── the track_data contract paste-back and H3FaceRefine depend on ────────────
+
+def test_clip_is_padded_onto_the_h3_grid():
+    imgs, mask = small_face_clip()
+    face_clip, data, _tgt, n_real, *_ = crop(imgs, mask, resampler="minimax_h3")
+    clip_len = face_clip.shape[0]
+
+    assert clip_len == _next_valid_clip_len(n_real, "minimax_h3")
+    assert (clip_len - 5) % 17 == 0
+    assert data["resampler"] == "minimax_h3"
+    assert data["clip_length"] == clip_len and data["ltx_length"] == clip_len
+    # 1:1 with the clip, so paste-back can index entries by frame position.
+    assert len(data["entries"]) == clip_len
+
+
+def test_entries_carry_what_the_downstream_nodes_read():
+    imgs, mask = small_face_clip()
+    _clip, data, _tgt, n_real, *_ = crop(imgs, mask, resampler="minimax_h3")
+    present = [e for e in data["entries"] if e.get("present")]
+
+    assert len(present) == n_real
+    assert all(e["face_px"] > 0 for e in present)
+    # H3FaceRefine ramps per-frame denoise between the gate's thresholds using these.
+    assert data["threshold_type"] == "width"
+    assert data["max_threshold_frac"] == pytest.approx(0.10)
+    assert data["min_threshold_frac"] == 0.0
+    assert all(e["measure_frac"] > 0 for e in present)
+
+
+def test_resampler_defaults_to_h3_and_ltx_is_honoured():
+    imgs, mask = small_face_clip()
+    _c, default_data, _t, _n, _r, default_fc, *_ = crop(imgs, mask)
+    assert default_data["resampler"] == "minimax_h3"
+    assert (default_data["clip_length"] - 5) % 17 == 0
+
+    _c, ltx_data, _t, _n, _r, ltx_fc, *_ = crop(imgs, mask, resampler="ltx")
+    assert ltx_data["resampler"] == "ltx"
+    assert (ltx_data["clip_length"] - 1) % 8 == 0
+
+    # frame_count is what drives the resampler's `length`, so it must be the PADDED length.
+    assert default_fc == default_data["clip_length"]
+    assert ltx_fc == ltx_data["clip_length"]
+
+
+def test_enhanced_flag_and_report():
+    imgs, mask = small_face_clip()
+    _c, _d, _t, n_real, _r, _fc, enhanced, report = crop(imgs, mask, resampler="minimax_h3")
+    assert enhanced is True and n_real > 0
+    # The report is how the user picks thresholds, so it has to quote all three units.
+    assert all(k in report for k in ("width", "height", "area"))
+    assert "min–max" in report and "enhanced" in report
+
+
+# ── graceful no-ops: nothing qualifies ───────────────────────────────────────
+
+def test_a_face_above_the_gate_throughout_is_a_no_op():
+    imgs, _ = small_face_clip()
+    clip, data, target_size, n_real, n_runs, frame_count, enhanced, _rep = crop(
+        imgs, large_face_clip(imgs), hysteresis_percent=0.0, resampler="minimax_h3")
+
+    assert n_real == 0 and n_runs == 0
+    assert enhanced is False, "the If/Else Switch uses this to skip the whole enhance branch"
+    assert target_size >= 8, "0 would fail ImageResizeKJv2 ('must be > 0')"
+    assert frame_count == clip.shape[0] >= 5
+    assert (clip.shape[0] - 5) % 17 == 0
+    assert all(not e.get("present") for e in data["entries"])
+
+
+def test_an_empty_enable_window_is_a_no_op_not_a_crash():
+    # min_threshold == max_threshold: the reported bug config.
+    imgs, mask = small_face_clip()
+    _c, _d, _t, n_real, _r, _fc, enhanced, _rep = crop(
+        imgs, mask, hysteresis_percent=0.0, min_threshold_percent=10.0,
+        resampler="minimax_h3")
+    assert n_real == 0 and enhanced is False
+
+
+def test_paste_back_on_a_no_op_clip_returns_the_original_untouched():
+    imgs, _ = small_face_clip()
+    clip, data, target_size, *_ = crop(imgs, large_face_clip(imgs),
+                                       hysteresis_percent=0.0, resampler="minimax_h3")
+    processed = torch.rand(clip.shape[0], target_size, target_size, 3)
+    (out,) = FaceTrackPasteBack().paste(imgs, processed, data, feather=0.15,
+                                        blend_mode="mask", only_present_frames=True,
+                                        colour_match=0.0)
+    assert torch.equal(out, imgs)
+
+
+# ── paste-back ───────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("blend_mode", ["mask", "rectangle"])
+def test_paste_back_with_colour_match(blend_mode):
+    imgs, mask = small_face_clip()
+    clip, data, target_size, *_ = crop(imgs, mask, resampler="minimax_h3")
+    processed = torch.rand(clip.shape[0], target_size, target_size, 3)
+    (out,) = FaceTrackPasteBack().paste(imgs, processed, data, feather=0.15,
+                                        blend_mode=blend_mode,
+                                        only_present_frames=True, colour_match=1.0)
+    assert tuple(out.shape) == (N, H, W, 3)
+    assert float(out.min()) >= 0.0 and float(out.max()) <= 1.0
+
+
+# ── audio, reindexed onto the gated clip ─────────────────────────────────────
+
+def test_audio_is_sliced_to_the_clip_frames():
+    imgs, mask = small_face_clip()
+    _c, data, *_ = crop(imgs, mask, resampler="minimax_h3")
+    sr = 16000
+    audio = {"waveform": torch.zeros(1, 2, sr * 3), "sample_rate": sr}   # 3s stereo
+
+    out, _report = FaceTrackAudioSlice().slice(audio, data, source_fps=24.0, target_fps=24.0)
+
+    assert out["waveform"].shape[-1] == len(data["entries"]) * round(sr / 24.0)
+    assert out["sample_rate"] == sr
+    assert out["waveform"].shape[:2] == (1, 2)
+
+
+def test_audio_slice_tolerates_a_missing_waveform():
+    imgs, mask = small_face_clip()
+    _c, data, *_ = crop(imgs, mask, resampler="minimax_h3")
+    out, _report = FaceTrackAudioSlice().slice({"waveform": None, "sample_rate": 0}, data)
+    assert out is not None
+
+
+# ── the per-run H3 workflow depends on slicing audio PER RUN ──────────────────
+
+def multi_run_clip():
+    """small, small | big, big, big | small, small, small — two enhanced runs."""
+    widths = [24, 28, 60, 100, 60, 24, 20, 22]
+    imgs = torch.rand(len(widths), H, W, 3)
+    mask = torch.zeros(len(widths), H, W)
+    for i, width in enumerate(widths):
+        half = width // 2
+        mask[i, 100 - half:100 + half, 100 - half:100 + half] = 1.0
+    return imgs, mask
+
+
+def ramped_audio(frames, sr=16000, fps=24.0):
+    """A waveform whose every source frame carries its own constant, so a slice can
+    be traced back to the frames it was taken from."""
+    win = round(sr / fps)
+    wave = torch.zeros(1, 1, win * (frames + 4))
+    for f in range(frames):
+        wave[0, 0, f * win:(f + 1) * win] = f + 1
+    return {"waveform": wave, "sample_rate": sr}, win
+
+
+def source_frames_in(sliced, win):
+    values = sliced["waveform"][0, 0]
+    seen = []
+    for k in range(0, values.shape[0], win):
+        v = int(values[k:k + win].max().item())
+        if v and (not seen or seen[-1] != v):
+            seen.append(v - 1)
+    return seen
+
+
+def test_each_run_slices_its_own_audio():
+    """Why face_enhance_h3_track_perrun needs a FaceTrackAudioSlice per branch: one
+    clip-wide slice spans every run, so it would drift against all but the first."""
+    from nodes import FaceTrackSelectRun
+
+    imgs, mask = multi_run_clip()
+    clip, data, _tgt, _n_real, n_runs, *_ = crop(
+        imgs, mask, hysteresis_percent=0.0, padding=1.5, resampler="minimax_h3")
+    assert n_runs == 2, "the fixture must actually split into two runs"
+
+    audio, win = ramped_audio(imgs.shape[0])
+    whole, _ = FaceTrackAudioSlice().slice(audio, data, source_fps=24.0, target_fps=24.0)
+    assert source_frames_in(whole, win) == [0, 1, 5, 6, 7], "clip-wide slice spans both runs"
+
+    for run in range(n_runs):
+        _run_clip, run_data, *_ = FaceTrackSelectRun().select(clip, data, run)
+        sliced, _ = FaceTrackAudioSlice().slice(audio, run_data,
+                                                source_fps=24.0, target_fps=24.0)
+        expected = [e["frame"] for e in run_data["entries"] if e["present"]]
+        assert source_frames_in(sliced, win) == expected

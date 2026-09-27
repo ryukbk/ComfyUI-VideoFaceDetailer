@@ -413,15 +413,17 @@
       },
       "widgets_values": [
         2.0,
-        "width",
-        10.0,
-        0.0,
-        0.0,
+        "area",
+        0.5,
         0.1,
+        0.0,
+        1.5,
         1.0,
         0.5,
-        0.4,
-        "ltx"
+        0.0,
+        "ltx",
+        true,
+        768
       ]
     },
     {
@@ -1012,7 +1014,7 @@
       },
       "widgets_values": [
         0.15,
-        "mask",
+        "rectangle",
         true
       ]
     },
@@ -1473,7 +1475,7 @@
       },
       "widgets_values": [
         0.15,
-        "mask",
+        "rectangle",
         true
       ]
     },

@@ -114,10 +114,15 @@ SPEC = {
         "inputs": [("masks", "MASK")],
         "outputs": [("has_face", "BOOLEAN"), ("frames_with_face", "INT")],
     },
-    "LazySwitchKJ": {
-        # on_true / on_false are lazy: the unchosen branch is never executed.
+    "ComfySwitchNode": {
+        # Core ComfyUI's "If/Else Switch" (comfy_extras/nodes_logic.py). on_true /
+        # on_false are declared lazy there too, so the unchosen branch is never
+        # executed - which is the whole reason this node is in these graphs. Same
+        # input names and order as the KJNodes node it replaces; the output is named
+        # "output" rather than being unnamed. Its type is MatchType, resolved from
+        # whichever branch is connected, so "*" is the right wildcard here.
         "inputs": [("switch", "BOOLEAN", "widget"), ("on_false", "*"), ("on_true", "*")],
-        "outputs": [("*", "*")],
+        "outputs": [("output", "*")],
     },
     "LTXVConditioning": {
         # frame_rate converted from widget -> input so it can be driven by source_fps.
@@ -149,6 +154,14 @@ SPEC = {
     # ── MiniMax H3 resampler stage (see NODES_H3) ──
     "UNETLoader": {
         "inputs": [],
+        "outputs": [("MODEL", "MODEL")],
+    },
+    "MiniMaxH3SigmaShift": {
+        # node_id is MiniMaxH3SigmaShift; the DISPLAY name is
+        # "ModelSamplingMiniMaxH3" (comfy_extras/nodes_minimax_h3.py). The workflow
+        # JSON must carry the node_id, so do not be tempted by the label.
+        # widget order: shift_video, shift_audio.
+        "inputs": [("model", "MODEL")],
         "outputs": [("MODEL", "MODEL")],
     },
     "LoraLoaderModelOnly": {
@@ -251,7 +264,7 @@ NODES_TRACK = {
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     # mask_track wired straight from SAM3_TrackToMask (no GetMaskSizeAndCount needed —
     # the gate's `report` output already surfaces frame/size counts).
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "ltx"],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -267,16 +280,16 @@ NODES_TRACK = {
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
            {"model": ("10", 0), "positive": ("14", 0), "negative": ("14", 1), "latent_image": ("13", 2)}),
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
-    "20": ("FaceTrackPasteBack", [0.15, "mask", True],
+    "20": ("FaceTrackPasteBack", [0.15, "rectangle", True],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
-    # LazySwitchKJ: on_true = the detailer output (node 20), on_false = original
+    # If/Else Switch (core ComfySwitchNode): on_true = the detailer output (node 20), on_false = original
     # video (node 1). The switch is driven by FaceTrackCropAndGate's `enhanced`
     # BOOLEAN (True iff >=1 frame qualified). The gate itself runs eagerly (it
     # drives the switch), but because on_true is LAZY, when `enhanced` is False the
     # rest of the branch (upscale -> LTX -> paste, nodes 8,13,15,16,20) is NOT
     # executed — so the no-op dummy never reaches Resize, and the original video
     # passes through. This also covers the no-face case (0 frames -> enhanced=False).
-    "26": ("LazySwitchKJ", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
+    "26": ("ComfySwitchNode", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
     # frame_rate is now an input (driven by source_fps); remaining widgets: loop_count,
     # filename_prefix, format, pingpong, save_output.
     "21": ("VHS_VideoCombine", vhs_combine("face_enhanced_track"),
@@ -421,7 +434,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "ltx"],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -443,7 +456,7 @@ def _branch_numeric(base, run_index, prev_paste_ref):
         ks: ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
              {"model": ("10", 0), "positive": (cond, 0), "negative": (cond, 1), "latent_image": (i2v, 2)}),
         dec: ("VAEDecode", [], {"samples": (ks, 0), "vae": ("10", 2)}),
-        pst: ("FaceTrackPasteBack", [0.15, "mask", True],
+        pst: ("FaceTrackPasteBack", [0.15, "rectangle", True],
               {"original_images": prev_paste_ref, "processed_clip": (dec, 0), "track_data": (sel, 1)}),
     }
     return frag, (pst, 0)
@@ -466,6 +479,41 @@ for j, base in enumerate((30, 40)):
     for i in range(8):
         LAYOUT_PERRUN[str(base + i)] = (5 + i, j)
 LAYOUT_PERRUN["99"] = (13, 0)
+
+# MiniMax H3's reference-conditioned STRUCTURED prompt format
+# (VIDEO_PROMPT_WRITING_GUIDE_ref_en.md): the six ordered sections
+# subject_definitions / summary / retention_analysis / detailed_description /
+# overall_soundscape / non_diegetic_music. Every reference MUST be cited by its tag
+# or the model ignores it: <Picture 1> = ref_images.ref_image_0 (the identity image),
+# <Audio 1> = ref_audios.ref_audio_0 (the sliced source speech, for lip-sync).
+# retention_analysis claims fully_preserved for the identity and fully_copy for the
+# audio, since the original track is locked exactly rather than regenerated.
+# Shared by both H3 graphs - edit here and both workflows pick it up.
+H3_PROMPT = (
+    "subject_definitions:\n"
+    "<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice "
+    "reference for <Subject 1> (S1) — the spoken vocal track the mouth must follow.\n\n"
+    "summary:\n"
+    "[reference generation + audio reference] The target video is a sharp, "
+    "detailed close-up 8K footage of <Subject 1> speaking naturally, keeping the "
+    "exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\n"
+    "retention_analysis:\n"
+    "<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial "
+    "features, identity and skin texture from <Picture 1> are retained.\n"
+    "<Audio 1>: fully_copy - the mouth shapes and speech timing follow this "
+    "audio exactly for lip-sync.\n\n"
+    "detailed_description:\n"
+    "The target video is a high-quality, sharp, naturally-lit close-up in a "
+    "realistic photographic style.\n"
+    "[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in "
+    "soft natural light, preserving the exact identity, facial features and skin "
+    "texture from <Picture 1>. Speaking naturally and lip-syncing precisely to "
+    "<Audio 1>, the lips, mouth and jaw move in time with the speech while the "
+    "identity stays consistent.\n\n"
+    "overall_soundscape: <Audio 1> is directly reused.\n\n"
+    "non_diegetic_music: N/A"
+)
+
 
 # ── Graph D: MiniMax H3 ref2va resampler with lipsync ─────────────────────────
 # Same tracked-face front-end as Graph A, but the LTX resample block is replaced
@@ -490,14 +538,14 @@ NODES_H3 = {
     # straight from SAM3_TrackToMask (no GetMaskSizeAndCount; the gate's `report`
     # output already surfaces frame/size counts).
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "width", 10.0, 0.0, 0.0, 0.1, 1.0, 0.5, 0.4, "minimax_h3"],
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
     # ── H3 models ──
     "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
-    "41": ("LoraLoaderModelOnly", ["minimax_h3_fl2v_lightx2v_turbo_4step.safetensors", 0.75],
+    "41": ("LoraLoaderModelOnly", ["minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors", 1.0],
            {"model": ("40", 0)}),
     "42": ("CLIPLoader", ["qwen3vl_32b_minimax_h3.safetensors", "minimax"], {}),
     "43": ("VAELoader", ["minimax_h3_video_vae_fp16.safetensors"], {}),
@@ -507,45 +555,12 @@ NODES_H3 = {
     # driven by the clip. ref_image_size="max" uses the ref at up to 2048px instead
     # of downscaling it to the (small) face canvas — without this the reference has
     # almost no effect at a small canvas (the "ref image is ignored" bug).
-    # Prompt follows MiniMax H3's reference-conditioned STRUCTURED format
-    # (VIDEO_PROMPT_WRITING_GUIDE_ref_en.md): the six ordered sections
-    # subject_definitions / summary / retention_analysis / detailed_description /
-    # overall_soundscape / non_diegetic_music. It MUST cite each reference with its
-    # tag or the model ignores it: <Picture 1> = ref_images.ref_image_0 (identity),
-    # <Audio 1> = ref_audios.ref_audio_0 (the sliced source speech for lip-sync).
-    # retention_analysis uses fully_preserved for the identity/frame and fully_copy
-    # for the audio (we lock the original audio exactly).
+    # The prompt itself is H3_PROMPT, shared with the per-run graph.
     # widget order is [prompt, width, height, length, ref_image_size]; width/height/
     # length are also inputs (the links drive them) but their widget values MUST be
     # present so ref_image_size="max" lands on the right widget, not "match".
     "47": ("MiniMaxH3ReferenceToVideo",
-           ["subject_definitions:\n"
-            "<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice "
-            "reference for <Subject 1> (S1) — the spoken vocal track the mouth must follow.\n\n"
-            "summary:\n"
-            "[reference generation + audio reference] The target video is a sharp, "
-            "detailed close-up of <Subject 1> speaking naturally, keeping the exact "
-            "identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\n"
-            "retention_analysis:\n"
-            "<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial "
-            "features, identity and skin texture from <Picture 1> are retained.\n"
-            "<Picture 1> ([Shot 1] first frame): fully_preserved - used as the identity "
-            "and appearance anchor for the face.\n"
-            "<Audio 1>: fully_copy - the mouth shapes and speech timing follow this "
-            "audio exactly for lip-sync.\n\n"
-            "detailed_description:\n"
-            "The target video is a high-quality, sharp, naturally-lit close-up in a "
-            "realistic photographic style.\n"
-            "[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in "
-            "soft natural light, preserving the exact identity, facial features and skin "
-            "texture from <Picture 1>. Speaking naturally and lip-syncing precisely to "
-            "<Audio 1>, the lips, mouth and jaw move in time with the speech while the "
-            "identity stays consistent.\n\n"
-            "overall_soundscape:\n"
-            "The spoken voice from <Audio 1> is the only diegetic sound; keep it clean "
-            "with no added ambience.\n\n"
-            "non_diegetic_music:\n"
-            "None.", 1344, 768, 124, "max"],
+           [H3_PROMPT, 1344, 768, 124, "max"],
            {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
             "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": ("57", 0),
             "width": ("8", 1), "height": ("8", 2), "length": ("7", 5)}),
@@ -558,12 +573,17 @@ NODES_H3 = {
     "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9],
            {"model": ("56", 0), "av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0),
             "track_data": ("7", 1), "audio_vae": ("44", 0), "audio": ("57", 0)}),
-    # Attention backend override, applied right after the Lora loader (falls back
+    # Flow-shift schedule, patched straight after the Lora loader. The VIDEO shift
+    # drives the sampler's sigma schedule; both values are also handed to the DiT,
+    # which inverts the video schedule to the shared base grid and derives the audio
+    # schedule from it - so this has to sit in the model chain, not beside it.
+    "58": ("MiniMaxH3SigmaShift", [12.0, 3.0], {"model": ("41", 0)}),
+    # Attention backend override, applied after the sigma shift (falls back
     # to PyTorch attention if the "comfy kitchen attention" kernels aren't installed).
-    "56": ("ModelAttentionBackend", ["comfy kitchen attention"], {"model": ("41", 0)}),
+    "56": ("ModelAttentionBackend", ["comfy kitchen attention"], {"model": ("58", 0)}),
     # H3FaceRefine outputs the patched model (attention + audio lock) for the sampler.
     "51": ("BasicGuider", [], {"model": ("48", 0), "conditioning": ("47", 0)}),
-    "52": ("BasicScheduler", ["simple", 4, 0.45], {"model": ("48", 0)}),
+    "52": ("BasicScheduler", ["simple", 3, 0.65], {"model": ("48", 0)}),
     "53": ("KSamplerSelect", ["res_multistep"], {}),
     "54": ("RandomNoise", [42, "fixed"], {}),
     "55": ("SamplerCustomAdvanced", [],
@@ -571,16 +591,17 @@ NODES_H3 = {
             "sigmas": ("52", 0), "latent_image": ("48", 1)}),
     "16": ("VAEDecode", [], {"samples": ("55", 0), "vae": ("43", 0)}),
     # colour_match=1.0 -> match refined face tone to the original region (edge seam).
-    "20": ("FaceTrackPasteBack", [0.15, "mask", True, 1.0],
+    "20": ("FaceTrackPasteBack", [0.15, "rectangle", True, 1.0],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
-    # LazySwitchKJ: on_true = detailer output (20), on_false = original video (1).
+    # If/Else Switch (core ComfySwitchNode): on_true = detailer output (20),
+    # on_false = original video (1).
     # The switch is driven by FaceTrackCropAndGate's `enhanced` BOOLEAN (True iff
     # >=1 frame qualified). The gate runs eagerly to drive the switch; on_true is
     # LAZY, so when `enhanced` is False the whole H3 chain (8,47,48,55,16,20) is
     # NOT executed — no wasted H3 pass, no model load, and the no-op dummy never
     # reaches Resize (which would collapse to 0 under divisible_by=32). Covers both
     # the no-face case and the "faces present but none qualify" case in one signal.
-    "26": ("LazySwitchKJ", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
+    "26": ("ComfySwitchNode", [False], {"switch": ("7", 6), "on_false": ("1", 0), "on_true": ("20", 0)}),
     # original audio muxed onto the saved video (H3 assumes 24fps for lipsync).
     "21": ("VHS_VideoCombine", vhs_combine("face_enhanced_h3"),
            {"images": ("26", 0), "frame_rate": ("22", 0), "audio": ("1", 2)}),
@@ -594,7 +615,8 @@ NODES_H3 = {
 LAYOUT_H3 = {
     # ── OUTSIDE (top band, row 0) ──
     "1": (0, 0), "22": (1, 0), "45": (2, 0), "40": (3, 0), "41": (4, 0),
-    "56": (5, 0), "42": (6, 0), "43": (7, 0), "44": (8, 0), "21": (9, 0),
+    "58": (5, 0), "56": (6, 0), "42": (7, 0), "43": (8, 0), "44": (9, 0),
+    "21": (10, 0),
     # ── INSIDE the subgraph (rows 2+) ──
     "2": (0, 2), "3": (1, 2), "4": (2, 2), "5": (3, 2), "9": (4, 2),
     "7": (0, 3), "8": (1, 3), "57": (2, 3),
@@ -616,3 +638,119 @@ build(NODES_TRACK, LAYOUT_TRACK, "workflows/face_enhance_ltx_track_workflow_UI.j
 build(NODES_PERFACE, LAYOUT_PERFACE, "workflows/face_enhance_ltx_workflow_UI.json")
 build(NODES_PERRUN, LAYOUT_PERRUN, "workflows/face_enhance_ltx_track_perrun_workflow_UI.json")
 build(NODES_H3, LAYOUT_H3, "workflows/face_enhance_h3_track_workflow_UI.json", groups=GROUPS_H3)
+
+# ── Graph E: MiniMax H3, one pass PER RUN ─────────────────────────────────────
+# Graph D with the single H3 pass replaced by one pass per run, the way Graph C
+# does it for LTX. Worth having for the same reason: a small->large->small clip
+# splits the enhanced frames into several runs, and one pass over the lot BRIDGES
+# the gap, i.e. H3 interpolates across a discontinuity that is really a jump cut
+# in the face's size.
+#
+# H3 adds a wrinkle LTX does not have: the AUDIO must be sliced per run too. Each
+# branch gets its own FaceTrackAudioSlice driven by that run's track_data, so the
+# lip-sync lines up with the frames actually in the pass. Slicing once for the whole
+# clip and reusing it would drift every run after the first.
+#
+# Shared across branches: the front-end (SAM3 -> gate), every model loader, and the
+# stateless sampler pieces (KSamplerSelect, RandomNoise). Per branch: SelectRun,
+# Resize, AudioSlice, ReferenceToVideo, H3FaceRefine, Guider, Scheduler,
+# SamplerCustomAdvanced, VAEDecode, PasteBack.
+NODES_H3_PERRUN = {
+    "1":  ("VHS_LoadVideo", ["input.mp4", 0, 0, 0, 0, 0, 1], {}),
+    "2":  ("CheckpointLoaderSimple", ["sam3.1.safetensors"], {}),
+    "3":  ("CLIPTextEncode", ["face"], {"clip": ("2", 1)}),
+    "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
+    "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
+    "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
+    "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
+    "7":  ("FaceTrackCropAndGate",
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768],
+           {"images": ("1", 0), "mask_track": ("5", 0)}),
+    # ── H3 models, loaded once and shared by every branch ──
+    "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
+    "41": ("LoraLoaderModelOnly", ["minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors", 1.0],
+           {"model": ("40", 0)}),
+    "58": ("MiniMaxH3SigmaShift", [12.0, 3.0], {"model": ("41", 0)}),
+    "56": ("ModelAttentionBackend", ["comfy kitchen attention"], {"model": ("58", 0)}),
+    "42": ("CLIPLoader", ["qwen3vl_32b_minimax_h3.safetensors", "minimax"], {}),
+    "43": ("VAELoader", ["minimax_h3_video_vae_fp16.safetensors"], {}),
+    "44": ("VAELoader", ["minimax_h3_audio_vae_fp32.safetensors"], {}),
+    "45": ("LoadImage", ["identity_reference.png"], {}),
+    # Stateless, so one of each serves every branch.
+    "53": ("KSamplerSelect", ["res_multistep"], {}),
+    "54": ("RandomNoise", [42, "fixed"], {}),
+}
+
+
+def _h3_branch(base, run_index, prev_paste_ref):
+    """One complete H3 pass for a single run, pasted onto `prev_paste_ref`.
+
+    Run 0 pastes onto the ORIGINAL video; run 1 pastes onto run 0's result, so the
+    composites accumulate. A run_index the clip does not have is a no-op that passes
+    its input through, which is why provisioning spare branches is harmless.
+    """
+    sel, rsz, aud, ref, refine, guider, sched, sampler, dec, pst = (
+        str(base + i) for i in range(10))
+    frag = {
+        sel: ("FaceTrackSelectRun", [run_index], {"face_clip": ("7", 0), "track_data": ("7", 1)}),
+        # ×32 canvas (H3 needs width/height divisible by 32); size from THIS run.
+        rsz: ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
+              {"image": (sel, 0), "width": (sel, 2), "height": (sel, 2)}),
+        # This run's frames only - the whole point of the per-run split.
+        aud: ("FaceTrackAudioSlice", [24.0, 24.0],
+              {"audio": ("1", 2), "track_data": (sel, 1), "source_fps": ("22", 0)}),
+        ref: ("MiniMaxH3ReferenceToVideo", [H3_PROMPT, 1344, 768, 124, "max"],
+              {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
+               "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": (aud, 0),
+               "width": (rsz, 1), "height": (rsz, 2), "length": (sel, 4)}),
+        refine: ("H3FaceRefine", [1.0, 0.35, 1.0, 9],
+                 {"model": ("56", 0), "av_latent": (ref, 1), "images": (rsz, 0),
+                  "vae": ("43", 0), "track_data": (sel, 1), "audio_vae": ("44", 0),
+                  "audio": (aud, 0)}),
+        guider: ("BasicGuider", [], {"model": (refine, 0), "conditioning": (ref, 0)}),
+        sched: ("BasicScheduler", ["simple", 3, 0.65], {"model": (refine, 0)}),
+        sampler: ("SamplerCustomAdvanced", [],
+                  {"noise": ("54", 0), "guider": (guider, 0), "sampler": ("53", 0),
+                   "sigmas": (sched, 0), "latent_image": (refine, 1)}),
+        dec: ("VAEDecode", [], {"samples": (sampler, 0), "vae": ("43", 0)}),
+        # colour_match=1.0 -> match the refined face's tone to the region it replaces.
+        pst: ("FaceTrackPasteBack", [0.15, "rectangle", True, 1.0],
+              {"original_images": prev_paste_ref, "processed_clip": (dec, 0),
+               "track_data": (sel, 1)}),
+    }
+    return frag, (pst, 0)
+
+
+# Bases 20 apart so a third branch can be added at 100 without renumbering.
+_h3b0, _h3p0 = _h3_branch(60, 0, ("1", 0))
+_h3b1, _h3p1 = _h3_branch(80, 1, _h3p0)
+NODES_H3_PERRUN.update(_h3b0)
+NODES_H3_PERRUN.update(_h3b1)
+# If/Else Switch on the gate's `enhanced` BOOLEAN: when nothing qualified, on_true is
+# lazy so NO branch runs - no H3 model load, no wasted pass, and the no-op dummy
+# never reaches a Resize (which would collapse to 0 under divisible_by=32).
+NODES_H3_PERRUN["26"] = ("ComfySwitchNode", [False],
+                         {"switch": ("7", 6), "on_false": ("1", 0), "on_true": _h3p1})
+NODES_H3_PERRUN["21"] = ("VHS_VideoCombine", vhs_combine("face_enhanced_h3_perrun"),
+                         {"images": ("26", 0), "frame_rate": ("22", 0), "audio": ("1", 2)})
+
+LAYOUT_H3_PERRUN = {
+    # shared front-end along the top
+    "1": (0, 0), "22": (1, 0), "2": (2, 0), "3": (3, 0), "4": (4, 0), "5": (5, 0),
+    "9": (6, 0), "7": (7, 0),
+    # model loaders on their own row
+    "45": (0, 1), "40": (1, 1), "41": (2, 1), "58": (3, 1), "56": (4, 1),
+    "42": (5, 1), "43": (6, 1), "44": (7, 1), "53": (8, 1), "54": (9, 1),
+    # Tail on its own row: the branch rows below run 0..9, so (9, 2) collided with
+    # branch 0's paste-back node.
+    "26": (0, 6), "21": (1, 6),
+}
+# One row per branch. MiniMaxH3ReferenceToVideo (offset 3) renders very tall, so
+# each branch row is followed by a spare row and the node is given the whole of it.
+for row, base in ((2, 60), (4, 80)):
+    for i in range(10):
+        LAYOUT_H3_PERRUN[str(base + i)] = (i, row)
+
+build(NODES_H3_PERRUN, LAYOUT_H3_PERRUN,
+      "workflows/face_enhance_h3_track_perrun_workflow_UI.json")
+

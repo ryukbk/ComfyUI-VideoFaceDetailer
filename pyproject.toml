@@ -13,6 +13,15 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/<you>/ComfyUI-VideoFaceDetailer"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# importlib import mode is required, not a preference: the repo root holds an
+# __init__.py (ComfyUI loads custom nodes as packages) AND its directory name
+# contains a hyphen, so pytest's default "prepend" mode tries to import the root as
+# a package called "ComfyUI-VideoFaceDetailer" and fails on the illegal identifier.
+# importlib does not derive module names from directories, so neither matters.
+addopts = "--import-mode=importlib"
+
 # ComfyUI Registry metadata — https://docs.comfy.org/registry/specifications
 [tool.comfy]
 PublisherId = "<your-publisher-id>"

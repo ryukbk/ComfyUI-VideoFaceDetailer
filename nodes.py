@@ -143,6 +143,32 @@ def _measure(bw, bh, area, kind):
 _RESAMPLERS = ("minimax_h3", "ltx")
 
 
+_SIZE_ALIGN = 32
+
+
+def _align_size(v, align=_SIZE_ALIGN):
+    """Round a pixel edge length UP to a multiple of `align`, never below it.
+
+    Both resamplers want spatial dimensions on a 32px grid, and an odd value silently
+    collapses downstream (KJNodes Resize with divisible_by, or the VAE's own stride).
+    Rounding up rather than to nearest, because rounding a requested size DOWN loses
+    detail the user asked for.
+    """
+    v = max(1, int(round(float(v))))
+    return int(-(-v // align) * align)
+
+
+def _resolve_target_size(out_side, upscale_ratio, fixed_target_size, target_size):
+    """The resampler's working edge length, from whichever mode is active.
+
+    One function so the crop node and FaceTrackSelectRun cannot disagree; the resolved
+    value is also stored in track_data, since a run slice has no access to the widgets.
+    """
+    if fixed_target_size:
+        return _align_size(target_size)
+    return max(8, int(round(out_side * upscale_ratio)))
+
+
 def _next_valid_clip_len(n, resampler="ltx"):
     """Smallest valid clip length >= n for the resampler's temporal grid.
 
@@ -424,11 +450,11 @@ class FaceTrackCropAndGate:
                                             "tooltip": "Face is upscaled by this ratio for resampling, then "
                                                        "restored to original size on paste-back. Wire a "
                                                        "FloatConstant here to control it."}),
-                "threshold_type": (["width", "height", "area"], {"default": "width",
+                "threshold_type": (["width", "height", "area"], {"default": "area",
                                     "tooltip": "Which face dimension the percentages below measure: 'width' -> "
                                                "percent of frame width; 'height' -> percent of frame "
                                                "height; 'area' -> percent of the whole frame area."}),
-                "max_threshold_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 0.01,
+                "max_threshold_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step": 0.01,
                                            "tooltip": "Upper bound, as a PERCENT (same unit as the size report): "
                                                       "enhance a frame ONLY while the face is SMALLER than this "
                                                       "percent of the dimension chosen by threshold_type "
@@ -436,7 +462,7 @@ class FaceTrackCropAndGate:
                                                       "E.g. 12 with threshold_type=area = faces under 12% of the "
                                                       "frame. Read the node's `report` and set this just above the "
                                                       "largest face you want enhanced."}),
-                "min_threshold_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.01,
+                "min_threshold_percent": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 100.0, "step": 0.01,
                                              "tooltip": "Lower bound, as a PERCENT in the same measure as "
                                                         "threshold_type (matching max_threshold_percent's units). "
                                                         "Faces SMALLER than this are skipped (too tiny to resample "
@@ -448,12 +474,16 @@ class FaceTrackCropAndGate:
                                                     "max/min_threshold_percent). Stops on/off flicker when the "
                                                     "face hovers at the boundary. ON below (max - hysteresis), "
                                                     "OFF at/above (max + hysteresis)."}),
-                "padding": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 2.0, "step": 0.05,
-                                      "tooltip": "Context margin around the face box. LOW (0.1 default) puts "
-                                                 "more of the crop on the face -> more pixels/detail at the same "
-                                                 "target_size (crisper). Raise it if the face gets clipped on fast "
-                                                 "motion or the model needs more context; very high can let the "
-                                                 "resampler reframe/enlarge the face."}),
+                "padding": ("FLOAT", {"default": 1.5, "min": 0.0, "max": 2.0, "step": 0.05,
+                                      "tooltip": "Context margin around the face box, as a fraction of the face's "
+                                                 "longer side: the crop is a square of max(w, h) * (1 + padding).\n"
+                                                 "LARGE (1.5 default) is the stable choice. A strong denoise moves "
+                                                 "the face shape, and a tight crop gives the resampler nothing "
+                                                 "around the head to reconcile that against, so the edge breaks; "
+                                                 "generous context also keeps the seam out in hair/background.\n"
+                                                 "LOW puts more of the crop on the face, so more pixels land on it "
+                                                 "at the same target_size (crisper) - worth it only at low denoise. "
+                                                 "Very high can let the resampler reframe/enlarge the face."}),
                 "smooth_alpha": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                            "tooltip": "Crop CENTER smoothing (EMA). 1.0 (default) = follow the face "
                                                       "exactly, no positional lag (recommended — the enhanced face "
@@ -468,13 +498,20 @@ class FaceTrackCropAndGate:
                                                    "from producing crops that engulf the body. Lower = stricter "
                                                    "(more uniform, risk of cropping a genuinely-grown face); "
                                                    "higher = looser; very high effectively disables the clamp."}),
-                "size_smooth_alpha": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01,
+                "size_smooth_alpha": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                         "tooltip": "Crop SIZE smoothing (EMA), separate from center. This is the "
                                                    "actual wobble fix: it damps the per-frame mask-bbox jitter "
                                                    "that makes the face pulse in scale. Lower = steadier size "
                                                    "(less wobble) but slower to follow genuine size changes; 1.0 "
-                                                   "= raw per-frame size (max wobble). Tune this for wobble, "
-                                                   "leave smooth_alpha=1.0 to keep position exact."}),
+                                                   "= raw per-frame size (max wobble).\n"
+                                                   "0.00 (default) FREEZES the size: every frame of a run reuses "
+                                                   "the crop size of that run's FIRST frame, so the zoom factor "
+                                                   "is constant and scale wobble is impossible. Each run snaps "
+                                                   "afresh, so a genuine size change across a run boundary is "
+                                                   "still followed. Raise it only if a face grows a lot WITHIN "
+                                                   "one run and the frozen box starts to crop it.\n"
+                                                   "Tune this for wobble, leave smooth_alpha=1.0 to keep "
+                                                   "position exact."}),
                 "resampler": (list(_RESAMPLERS), {"default": "minimax_h3",
                                         "tooltip": "Which resampler this clip feeds, so it is padded to that "
                                                    "model's valid frame-count grid: 'minimax_h3' (default) -> "
@@ -483,6 +520,30 @@ class FaceTrackCropAndGate:
                                                    "Set 'ltx' when feeding the LTX workflows. The padded frame "
                                                    "count (frame_count output) is what you wire into the "
                                                    "resampler's length, so paste-back stays 1:1."}),
+                # These two sit at the END on purpose: ComfyUI stores widget values
+                # POSITIONALLY, so inserting them next to upscale_ratio - where they
+                # belong visually - would shift every widget after it in workflows
+                # already saved against this node. web/size_mode_toggle.js hides
+                # whichever of the two is inactive, so the order stops mattering on
+                # screen while staying stable on disk.
+                "fixed_target_size": ("BOOLEAN", {"default": True,
+                                        "label_on": "target_size (fixed)",
+                                        "label_off": "upscale_ratio",
+                                        "tooltip": "Which knob decides the resampler's working size.\n"
+                                                   "ON (default): target_size is the fixed edge length below, "
+                                                   "whatever the face size - one known resolution for every "
+                                                   "frame, and the canvas never tracks a small face down to a "
+                                                   "size the model renders badly.\n"
+                                                   "OFF: target_size = crop window * upscale_ratio, so it follows "
+                                                   "the face and a small face gets a small canvas."}),
+                "target_size": ("INT", {"default": 768, "min": 32, "max": 4096, "step": 32,
+                                        "tooltip": "Square edge length, in pixels, when fixed_target_size is ON; "
+                                                   "ignored otherwise. Rounded to a multiple of 32 internally, so "
+                                                   "a value arriving from a link or an older workflow is still "
+                                                   "valid for LTX and H3. 768 (default) is H3's native short "
+                                                   "edge. Raising it gives the resampler more to work with but "
+                                                   "costs area, not length: 1280 is ~2.8x the latent tokens of "
+                                                   "768."}),
             },
         }
 
@@ -497,8 +558,9 @@ class FaceTrackCropAndGate:
                    "target_size = native window * upscale_ratio.")
 
     def crop(self, images, mask_track, upscale_ratio, threshold_type, max_threshold_percent,
-             hysteresis_percent, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.4,
-             min_threshold_percent=0.0, resampler="minimax_h3"):
+             hysteresis_percent, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.0,
+             min_threshold_percent=0.1, resampler="minimax_h3",
+             fixed_target_size=True, target_size=768):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -572,11 +634,11 @@ class FaceTrackCropAndGate:
               f"enhanced, and min_threshold_percent just BELOW the smallest, in "
               f"the threshold_type={threshold_type} column.")
 
-        def _make_report(n_enh):
+        def _make_report(n_enh, drops=""):
             return (size_report + f" | threshold_type={threshold_type}, "
                     f"max_threshold_percent={thr * 100:.2f}%, "
                     f"min_threshold_percent={thr_min * 100:.2f}% -> "
-                    f"{n_enh} frame(s) enhanced")
+                    f"{n_enh} frame(s) enhanced" + drops)
 
         # Per-frame enhance decision with hysteresis. Absent frames are never
         # enhanced and do not change the on/off state (we hold it across gaps).
@@ -599,11 +661,40 @@ class FaceTrackCropAndGate:
             enhance[i] = state_on
 
         enhanced_idx = [i for i in range(N) if enhance[i]]
+
+        # ── Why every frame that was NOT enhanced got dropped ──────────────────
+        # Classified against the ON thresholds, not the raw ones: with hysteresis
+        # those differ, and a frame sitting in the dead band genuinely was rejected
+        # by on_thresh/lo_on rather than by the threshold the user typed.
+        # A dropped frame that HAS a face always fails that ON window (the loop
+        # would otherwise have switched the gate on), so "too small" can be taken
+        # as the remainder and the three counts are exhaustive by construction.
+        unit = {"height": "frame height", "area": "frame area"}.get(
+            threshold_type, "frame width")
+        dropped_idx = [i for i in range(N) if not enhance[i]]
+        n_no_face = sum(1 for i in dropped_idx if measures[i] is None)
+        n_too_big = sum(1 for i in dropped_idx
+                        if measures[i] is not None and measures[i] >= on_thresh)
+        n_too_small = len(dropped_idx) - n_no_face - n_too_big
+        gate_counts = (f"{len(enhanced_idx)}/{N} frames enhanced, "
+                       f"{len(dropped_idx)} dropped: {n_no_face} no face, "
+                       f"{n_too_big} too large (≥{on_thresh * 100:.2f}% of {unit})")
+        if thr_min > 0.0:
+            gate_counts += (f", {n_too_small} too small "
+                            f"(≤{lo_on * 100:.2f}% of {unit})")
+        if hysteresis > 0.0:
+            # Say so, or the numbers look like they contradict the widget values.
+            gate_counts += (f" [thresholds shown include hysteresis "
+                            f"{hysteresis * 100:.2f}%]")
+        print(f"[FaceTrackCropAndGate] {gate_counts}")
+        _drop_note = (f" | dropped {len(dropped_idx)}: {n_no_face} no face, "
+                      f"{n_too_big} too large, {n_too_small} too small")
+
         if not enhanced_idx:
             # No frame qualified for enhancement. Historically this raised and
             # killed the whole graph — but that defeats a workflow that WANTS to
             # skip the detailer branch (a large-face video needing no enhancement,
-            # or a LazySwitchKJ gated on MaskHasFace). The gate runs eagerly
+            # or an If/Else Switch gated on MaskHasFace). The gate runs eagerly
             # upstream, so a hard raise fires BEFORE any downstream switch can skip
             # it. Instead, emit a valid DUMMY no-op clip (mirrors FaceTrackSelectRun
             # for empty runs): a minimal batch on the resampler's grid, every entry
@@ -612,8 +703,6 @@ class FaceTrackCropAndGate:
             # ORIGINAL video passes through unchanged. We still print a detailed
             # WARNING so a genuine misconfig stays visible in the log.
             present = [m for m in measures if m is not None]
-            unit = {"height": "frame height", "area": "frame area"}.get(
-                threshold_type, "frame width")
             if not present:
                 why = ("the tracked mask was EMPTY on every frame — SAM3 tracked "
                        "nothing for the selected object index (check "
@@ -650,15 +739,18 @@ class FaceTrackCropAndGate:
                     "n_runs": 0, "clip_length": dummy_len, "resampler": resampler,
                     "threshold_type": threshold_type, "max_threshold_frac": thr,
                     "min_threshold_frac": thr_min,
+                    "target_size": _resolve_target_size(side, upscale_ratio,
+                                                        fixed_target_size, target_size),
+                    "fixed_target_size": bool(fixed_target_size),
                     "ltx_length": dummy_len}
-            target_size = max(8, int(round(side * upscale_ratio)))
+            target_size = data["target_size"]
             # frame_count = the (padded) clip length, so the resampler's `length`
             # can be driven directly without a separate GetImageSizeAndCount.
-            # enhanced = False: no frame qualified. Wire this to LazySwitchKJ.switch
+            # enhanced = False: no frame qualified. Wire this to the If/Else Switch's
             # so the whole enhance branch (Resize/H3/sampler) is SKIPPED — the dummy
             # never reaches a resize node (which would collapse to 0 under
             # divisible_by) and the original video passes through on_false.
-            return (dummy, data, target_size, 0, 0, dummy_len, False, _make_report(0))
+            return (dummy, data, target_size, 0, 0, dummy_len, False, _make_report(0, _drop_note))
 
         # ── Crop each enhanced frame TIGHT to its own face bbox + padding ──────
         # Earlier versions used one constant SQUARE window sized to the max face
@@ -801,10 +893,13 @@ class FaceTrackCropAndGate:
                                 "present": False, "run": -1, "cmask": None})
 
         face_clip = torch.stack(clip, dim=0)  # [target_len, out_side, out_side, C]
-        target_size = max(8, int(round(out_side * upscale_ratio)))
+        target_size = _resolve_target_size(out_side, upscale_ratio,
+                                           fixed_target_size, target_size)
         grid = "17k+5" if resampler == "minimax_h3" else "8n+1"
         data = {"entries": entries, "orig_shape": (B, H, W, C), "out_side": out_side,
                 "upscale_ratio": float(upscale_ratio), "n_real": n_real,
+                # resolved here so a run slice, which has no widgets, cannot disagree
+                "target_size": target_size, "fixed_target_size": bool(fixed_target_size),
                 "n_runs": n_runs, "clip_length": target_len, "resampler": resampler,
                 # Gate window (fractions) + measure, so H3FaceRefine can ramp its
                 # per-frame denoise between min_threshold and max_threshold.
@@ -828,7 +923,7 @@ class FaceTrackCropAndGate:
         # from this directly instead of a separate GetImageSizeAndCount node.
         # enhanced = True: >=1 frame qualified, so the enhance branch should run.
         return (face_clip, data, target_size, n_real, n_runs, target_len,
-                n_real > 0, _make_report(n_real))
+                n_real > 0, _make_report(n_real, _drop_note))
 
 
 class FaceTrackSelectRun:
@@ -913,11 +1008,18 @@ class FaceTrackSelectRun:
                                     "present": False, "run": run_index})
 
         run_clip = torch.stack(run_frames, dim=0)
+        # Carried from the crop node rather than recomputed: with a fixed target_size
+        # there is no ratio to recompute it from, and a run must never hand the
+        # resampler a different size from the clip it was sliced out of.
+        target_size = track_data.get("target_size")
+        if target_size is None:
+            target_size = max(8, int(round(out_side * ratio)))
         data = {"entries": run_entries, "orig_shape": track_data.get("orig_shape"),
                 "out_side": out_side, "upscale_ratio": float(ratio),
+                "target_size": int(target_size),
+                "fixed_target_size": bool(track_data.get("fixed_target_size", False)),
                 "n_real": n_real, "n_runs": 1, "clip_length": target_len,
                 "resampler": resampler, "ltx_length": target_len}
-        target_size = max(8, int(round(out_side * ratio)))
         return (run_clip, data, target_size, n_real, target_len)
 
 
@@ -967,10 +1069,21 @@ class FaceTrackPasteBack:
                                       "tooltip": "Edge softness. In 'mask' mode: Gaussian-blur radius of the "
                                                  "face-shaped alpha, as a fraction of the crop side. In 'rectangle' "
                                                  "mode: width of the linear edge ramp."}),
-                "blend_mode": (["mask", "rectangle"], {"default": "mask",
-                                        "tooltip": "'mask' composites using the FACE-SHAPED segmentation alpha "
-                                                   "(only face pixels are written; no rectangular seam — recommended). "
-                                                   "'rectangle' is the legacy feathered-square blend."}),
+                "blend_mode": (["mask", "rectangle"], {"default": "rectangle",
+                                        "tooltip": "'rectangle' (default) writes the WHOLE crop window with a linear "
+                                                   "edge ramp, so everything the resampler changed is kept — hair, "
+                                                   "jawline and the pixels just outside the mask — at the cost of a "
+                                                   "soft rectangular boundary.\n"
+                                                   "'mask' composites using the FACE-SHAPED segmentation alpha "
+                                                   "instead: only face pixels are written and there is no square "
+                                                   "seam, but anything the mask excludes is discarded.\n"
+                                                   "WHY rectangle is the default: that alpha is cut from the mask "
+                                                   "track of the ORIGINAL frames, so it describes the face BEFORE "
+                                                   "refinement. Stronger denoise moves the face shape, and the new "
+                                                   "jawline/hairline then falls outside the old silhouette and gets "
+                                                   "clipped - the tighter the mask, the more visibly it breaks. "
+                                                   "'mask' is the better choice at low denoise, where the shape "
+                                                   "barely moves and a tight alpha leaves the background untouched."}),
                 "only_present_frames": ("BOOLEAN", {"default": True,
                                         "tooltip": "Only composite frames where the face was actually detected."}),
                 "colour_match": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -992,7 +1105,7 @@ class FaceTrackPasteBack:
                    "(undoing upscale_ratio) and composite per frame.")
 
     def paste(self, original_images, processed_clip, track_data, feather,
-              blend_mode="mask", only_present_frames=True, colour_match=0.0):
+              blend_mode="rectangle", only_present_frames=True, colour_match=0.0):
         out = original_images.clone()
         entries = track_data.get("entries", [])
         if len(entries) == 0:
@@ -1060,7 +1173,9 @@ class FaceTrackPasteBack:
                 a = _gaussian_blur_2d(a, fpx)
                 alpha = a.unsqueeze(-1)
             else:
-                # Legacy rectangular blend: full square with a linear edge ramp.
+                # Rectangular blend (the default): full square with a linear edge ramp.
+                # Also the fallback when blend_mode is 'mask' but the entry carries no
+                # cmask, so a track without stored masks still composites.
                 fpx = max(1, int(win * feather))
                 alpha = torch.ones(win, win, dtype=out.dtype, device=out.device)
                 if fpx > 0:
@@ -1085,7 +1200,7 @@ class FaceTrackPasteBack:
 class MaskHasFace:
     """MASK -> BOOLEAN: True if any frame's mask has a face region.
 
-    Drives a LazySwitchKJ so the whole crop -> upscale -> LTX -> paste branch is
+    Drives an If/Else Switch so the whole crop -> upscale -> LTX -> paste branch is
     skipped (never executed) when SAM3 tracked nothing. Must sit OUTSIDE the
     gated branch (it reads the SAM3 mask directly, not the crop output).
 
@@ -1107,7 +1222,7 @@ class MaskHasFace:
     FUNCTION = "check"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("True if any frame's mask contains a face (>= min_pixels set). "
-                   "Wire into LazySwitchKJ.switch to skip the detailer branch "
+                   "Wire into the If/Else Switch's switch to skip the detailer branch "
                    "when no face is detected.")
 
     def check(self, masks, min_pixels=1):

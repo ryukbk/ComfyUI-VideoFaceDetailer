@@ -90,9 +90,10 @@ in ComfyUI). The **example workflows** additionally require:
 | Dependency | Used for |
 |---|---|
 | Native **SAM 3 / 3.1** nodes (bundled with recent ComfyUI) | `SAM3_VideoTrack`, `SAM3_TrackToMask`, `SAM3_TrackPreview` |
+| Native **If/Else Switch** (`comfy_extras/nodes_logic.py`, bundled with a recent ComfyUI) | `ComfySwitchNode` — skips the whole enhance branch when no frame qualifies. Marked *experimental* upstream, so its schema could still change. |
 | Native **LTXV** nodes (bundled with ComfyUI) | the video resample pass (LTX workflows) |
-| Native **MiniMax H3** nodes (`comfy_extras/nodes_minimax_h3.py`, bundled with a recent ComfyUI) | the video resample pass (H3 workflow): `MiniMaxH3ReferenceToVideo`, `UNETLoader`/`CLIPLoader`/`VAELoader`, `SamplerCustomAdvanced`, etc. |
-| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2`, `LazySwitchKJ` |
+| Native **MiniMax H3** nodes (`comfy_extras/nodes_minimax_h3.py`, bundled with a recent ComfyUI) | the video resample pass (H3 workflows): `MiniMaxH3ReferenceToVideo`, `ModelSamplingMiniMaxH3` (node id `MiniMaxH3SigmaShift`), `UNETLoader`/`CLIPLoader`/`VAELoader`, `SamplerCustomAdvanced`, etc. |
+| [**ComfyUI-KJNodes**](https://github.com/kijai/ComfyUI-KJNodes) | `ImageResizeKJv2` |
 | [**ComfyUI-VideoHelperSuite**](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) | `VHS_LoadVideo`, `VHS_VideoCombine`, `VHS_VideoInfo` |
 
 You also need a SAM 3 / 3.1 checkpoint plus **either** an LTXV checkpoint **or**
@@ -118,6 +119,7 @@ Drag any of these onto the ComfyUI canvas (they are UI workflow-format JSON):
 | `workflows/face_enhance_ltx_track_perrun_workflow_UI.json` | Reference variant that gives **each run its own LTX pass** (no cross-run bridging). Ships configured for up to 2 runs. |
 | `workflows/face_enhance_ltx_workflow_UI.json` | Per-frame, per-face variant (uses `SAM3_Detect` union masks; handles multiple faces per frame, no tracking). |
 | `workflows/face_enhance_h3_track_workflow_UI.json` | **MiniMax H3 variant** with lip-sync. Same tracked front-end, but the LTX block is replaced by H3 img2img (`MiniMaxH3ReferenceToVideo` → `H3FaceRefine` → `SamplerCustomAdvanced`). See [MiniMax H3](#minimax-h3-resampler-with-lip-sync). |
+| `workflows/face_enhance_h3_track_perrun_workflow_UI.json` | The H3 variant with **one pass per run**, the H3 counterpart of the LTX per-run graph. Ships configured for up to 2 runs. Each branch slices the audio for **its own run**, so lip-sync stays aligned. |
 
 Set the placeholders before running: the input `video`, the SAM 3 / 3.1
 `ckpt_name`, and the LTXV `ckpt_name` (LTX workflows). For the **H3** workflow set
@@ -139,23 +141,25 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 |---|---|---|---|
 | `images` | IMAGE | — | the video frames |
 | `mask_track` | MASK | — | per-frame mask of **one** tracked face (from `SAM3_TrackToMask`) |
-| `upscale_ratio` | FLOAT | 2.0 | crop is upscaled by this for resampling; `target_size = crop_size × ratio`. Paste-back undoes it exactly. |
-| `threshold_type` | choice | width | which face dimension `max_threshold_percent` measures: **width**, **height**, or **area** |
-| `max_threshold_percent` | FLOAT | 10.0 | **upper bound**, as a **percent** (same unit as the `report`) — enhance a frame **only while** the face is *smaller* than this percent of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. `12` = faces under 12% of the frame). Fine grain (`0.01`) so tiny area values like `1.38%` are settable. |
-| `min_threshold_percent` | FLOAT | 0.0 | **lower bound**, as a **percent** in the same measure as `threshold_type` (matching `max_threshold_percent`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_threshold_percent` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
+| `upscale_ratio` | FLOAT | 2.0 | crop is upscaled by this for resampling; `target_size = crop_size × ratio`, so it follows the face. Paste-back undoes it exactly. **Ignored when `fixed_target_size` is ON**, which hides this widget. |
+| `threshold_type` | choice | **area** | which face measure the percentages below use: **width**, **height**, or **area**. `area` is the default because it responds to both dimensions at once — a face that grows only in height still crosses the gate, where a width-only measure would miss it. |
+| `max_threshold_percent` | FLOAT | **0.5** | **upper bound**, as a **percent** (same unit as the `report`) — enhance a frame **only while** the face is *smaller* than this percent of the dimension chosen by `threshold_type` (width/height → that dimension; area → whole-frame area, e.g. `12` = faces under 12% of the frame). Fine grain (`0.01`) so tiny area values like `1.38%` are settable. |
+| `min_threshold_percent` | FLOAT | **0.1** | **lower bound**, as a **percent** in the same measure as `threshold_type` (matching `max_threshold_percent`'s units). Faces *smaller* than this are skipped (too tiny to resample usefully). 0 = no lower bound. Enhancement runs only when `min < measure < max`. ⚠️ Setting this **≥** `max_threshold_percent` makes the enable window **empty** (nothing qualifies → the whole video passes through unchanged). |
 | `hysteresis_percent` | FLOAT | 0.0 | dead-band around **both** thresholds, as a **percent** (same unit as the thresholds), to stop on/off flicker during a slow zoom. 0 = crisp boundary (default); raise it if a face hovering at the threshold flickers on/off |
-| `padding` | FLOAT | 0.1 | context margin around the face box. **Low (default 0.1)** puts more of the crop on the face → more detail at the same `target_size` (crisper). Raise it if the face gets clipped on fast motion or the model needs more context; high values can let the resampler reframe/enlarge the face (see Limitations) |
+| `padding` | FLOAT | 1.5 | context margin around the face box, as a fraction of its longer side: the crop is a square of `max(w, h) × (1 + padding)`. **Large (default 1.5) is the stable choice** — a strong denoise moves the face shape, and a tight crop gives the resampler nothing around the head to reconcile that against, so the edge breaks; generous context also puts the seam out in hair/background. **Low** puts more of the crop on the face → more detail at the same `target_size` (crisper), worth it only at low denoise. Very high can let the resampler reframe/enlarge the face (see Limitations). ⚠️ Raising `padding` enlarges the crop window, so in `upscale_ratio` mode it raises `target_size` with it — cap it with `fixed_target_size` if VRAM matters. |
 | `smooth_alpha` | FLOAT | 1.0 | crop **center** smoothing (EMA). **1.0 (default) = follow the face exactly, no positional lag** (the enhanced face tracks the head). Lower = steadier framing but lags fast head motion (reads as the face being out of sync); drop toward `0.7` only if raw mask noise makes the crop jitter |
 | `max_size_deviation` | FLOAT | 0.5 | clamp each frame's crop size to `[median/(1+d), median·(1+d)]`; stops occasional tall/merged masks from engulfing the body |
-| `size_smooth_alpha` | FLOAT | 0.4 | crop **size** smoothing (EMA) — the actual *wobble* control, independent of position |
+| `size_smooth_alpha` | FLOAT | **0.0** | crop **size** smoothing (EMA) — the actual *wobble* control, independent of position. **0.0 (default) freezes the size**: every frame of a run reuses the crop size of that run's *first* frame, so the zoom factor is constant and scale wobble is impossible. Each run snaps afresh, so a genuine size change across a run boundary is still followed. Raise it only if a face grows a lot *within* one run and the frozen box starts to clip it. |
 | `resampler` | choice | minimax_h3 | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **minimax_h3** (default) → `17k+5` (MiniMax H3); **ltx** → `8n+1` (LTXVImgToVideo). The padded frame count is what you wire into the resampler's `length` (use the `frame_count` output), so paste-back stays 1:1. Set **ltx** when feeding the LTX workflows. |
+| `fixed_target_size` | BOOLEAN | **True** | which knob decides the resampler's working size. **ON (default)**: `target_size` is the fixed edge length below, whatever the face size — one known resolution for every frame, and the canvas never tracks a small face down to a size the model renders badly. **OFF**: `target_size = crop window × upscale_ratio`, so it follows the face. The toggle **hides whichever of the two is inactive** (`web/size_mode_toggle.js`), so with the default ON you will see `target_size` and not `upscale_ratio`. |
+| `target_size` | INT | **768** | square edge length in pixels when `fixed_target_size` is ON; ignored otherwise. **Rounded UP to a multiple of 32 internally**, so a value from a link or an older workflow stays valid for LTX and H3. `768` is H3's native short edge. Raising it gives the resampler more to work with but costs **area**, not length — 1280 is ~2.8× the latent tokens of 768. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
 (INT), `enhanced_frames` (INT), `num_runs` (INT), `frame_count` (INT — the
 **padded** clip length, i.e. what the resampler's `length` must be; wire it
 straight into `MiniMaxH3ReferenceToVideo.length` / `LTXVImgToVideo.length`
 instead of a separate `GetImageSizeAndCount` node), `enhanced` (BOOLEAN — True iff
-≥1 frame qualified; wire into `LazySwitchKJ.switch` so the enhance branch is
+≥1 frame qualified; wire into the **If/Else Switch**'s `switch` so the enhance branch is
 skipped when nothing qualifies. This is the recommended gate — it supersedes
 `MaskHasFace`, since "no face" is just one way to get 0 qualifying frames),
 `report` (STRING).
@@ -169,6 +173,23 @@ you still want enhanced and `min_threshold_percent` just **below** the smallest,
 reading the column for your chosen `threshold_type`. Wire `report` into a
 text-preview node (e.g. KJNodes' "Display Any") to keep it on screen.
 
+The console then says **how the gate actually landed**, and why every rejected frame
+was rejected:
+
+```
+[FaceTrackCropAndGate] 3/8 frames enhanced, 5 dropped: 1 no face, 2 too large
+(≥15.00% of frame width), 2 too small (≤5.00% of frame width)
+```
+
+The three categories are exhaustive, so they always sum to the dropped count — which
+is what tells you *which* threshold to move. The quoted percentages are the **ON**
+thresholds, i.e. `max − hysteresis` and `min + hysteresis`; when a dead-band is set
+the line appends `[thresholds shown include hysteresis …]`, because the numbers
+otherwise look like they contradict the widgets. `too small` is omitted entirely when
+`min_threshold_percent` is 0, since no frame can then be rejected for being too small.
+The same breakdown is appended to the `report` output, and it is printed on the no-op
+path too — a run where nothing qualified is exactly when you need it.
+
 > **Anti-wobble tip:** for a steady face that the mask jitters on, use
 > `smooth_alpha = 1.0` (exact position) and lower `size_smooth_alpha`
 > (≈0.3) with low `padding`. Increasing `padding` also reduces apparent wobble
@@ -180,7 +201,7 @@ onto the original frame at the original location.
 
 **Inputs:** `original_images` (IMAGE), `processed_clip` (IMAGE, the resampled
 faces, **same count/order** as the crop output), `track_data` (FACE_TRACK_DATA),
-`feather` (FLOAT, 0.15), `blend_mode` (choice, **mask**), `only_present_frames`
+`feather` (FLOAT, 0.15), `blend_mode` (choice, **rectangle**), `only_present_frames`
 (BOOLEAN, True), `colour_match` (FLOAT, 0.0). **Output:** `images` (IMAGE).
 
 `colour_match` (0 = off, back-compat default) matches the refined face's
@@ -189,11 +210,24 @@ independent resample pass doesn't paste back a subtly brighter/shifted face —
 the main lever for a clean **edge/seam match** (recommended `~1.0` for the
 generative MiniMax H3 path). See [edges & denoise](#edges-seams-and-denoise).
 
-`blend_mode = mask` (default) composites using the **face-shaped segmentation
-alpha** (from the tracked mask), Gaussian-feathered — so only face pixels are
-written and the surrounding background is untouched (no rectangular seam, and
-any tone/scale drift in the crop margin is not pasted). `rectangle` is the legacy
-feathered-square blend. Downsampling uses area interpolation (alias-free);
+`blend_mode = rectangle` (default) writes the **whole crop window** with a linear
+edge ramp, so everything the resampler changed is kept — hair, jawline, and the
+pixels just outside the mask — at the cost of a soft rectangular boundary; pair it
+with `colour_match` to keep that boundary from reading as a seam. `mask` composites
+using the **face-shaped segmentation alpha** (from the tracked mask),
+Gaussian-feathered, so only face pixels are written and the surrounding background
+is untouched (no rectangular seam, and any tone/scale drift in the crop margin is
+not pasted) — but anything the mask excludes is discarded. `mask` also falls back to
+the rectangular blend on entries that carry no stored mask.
+
+> **Why `rectangle` is the default.** That alpha is cut from the mask track of the
+> **original** frames (`cmask`, taken at crop time), so it describes the face *before*
+> refinement. Stronger denoise moves the face shape, and the new jawline/hairline then
+> falls outside the old silhouette and is clipped — the tighter the mask, the more
+> visibly it breaks. Prefer `mask` at **low** denoise, where the shape barely moves and
+> a tight alpha keeps the background pristine; prefer `rectangle` as denoise rises.
+
+Downsampling uses area interpolation (alias-free);
 upscaling uses bicubic. It **errors loudly** if `processed_clip` count ≠ the
 crop's frame count, rather than silently pasting faces onto wrong frames.
 
@@ -280,7 +314,9 @@ MiniMax H3 img2img pass that lip-syncs the refined face to the original audio.
 
 ```
 Model chain (each step patches the model; the sampler uses the final one):
-  UNETLoader (H3 ref2va) → LoraLoaderModelOnly (turbo) → ModelAttentionBackend ("comfy kitchen attention")
+  UNETLoader (H3 ref2va) → LoraLoaderModelOnly (step-reduction LoRA)
+      → ModelSamplingMiniMaxH3 (shift_video 12.0 / shift_audio 3.0)
+      → ModelAttentionBackend ("comfy kitchen attention")
       → H3FaceRefine (model in) → [H3FaceRefine emits the patched model] → BasicGuider + BasicScheduler
 
 Main graph:
@@ -302,7 +338,7 @@ Main graph:
                  │                                                     │                               │
                  ├─ original frames ──────► FaceTrackPasteBack (colour_match) ◄────────────────────────┘
                  │                                     │ on_true (LAZY)
-                 │      gate.enhanced ─────────► LazySwitchKJ  (on_false = original video)
+                 │      gate.enhanced ─────────► If/Else Switch (on_false = original video)
                  │                                     │
                  └─ audio (source) ───────► VHS_VideoCombine (frame_rate ← source_fps) ─► saved .mp4
 ```
@@ -383,7 +419,7 @@ than refines.
 
 The H3 workflow ships with a group box titled **"H3 Face Detailer — select this
 group, then 'Convert to Subgraph'"** around the whole detailer core (SAM3 →
-gate → resize → H3 → decode → paste → `LazySwitchKJ`). To collapse it into a
+gate → resize → H3 → decode → paste → If/Else Switch). To collapse it into a
 single reusable subgraph node:
 
 1. Click the group's title bar to select all nodes inside it.
@@ -393,7 +429,7 @@ single reusable subgraph node:
    group boundary:
    - inputs: `images` (source frames), `model`, `clip`, `vae`, `audio_vae`,
      `reference_image` (identity), `audio` (source), `source_fps`
-   - output: `images` (the final composited frames from `LazySwitchKJ`)
+   - output: `images` (the final composited frames from the If/Else Switch)
 4. ComfyUI names the input slots after their source (e.g. `IMAGE`, `VAE`,
    `MODEL`); double-click a slot to rename it to the friendly names above.
 
@@ -420,6 +456,10 @@ If the pasted face doesn't match the surrounding video at the edges:
   where seams are most visible — by dropping denoise as face size grows.
 - **`feather`** / **`padding`** put the seam in hair/background; SAM-style masks
   trace tightly, so lower `feather` if you use them.
+- **`blend_mode` interacts with denoise.** The face-shaped alpha is the *original*
+  silhouette, so at high denoise the reshaped face no longer fits inside it and the
+  edge breaks. That is why `rectangle` is the default; switch to `mask` only when
+  denoise is low enough that the face shape stays put.
 
 ---
 
@@ -431,11 +471,20 @@ them into **one** LTX pass; the crop node prints how many runs it found and
 exposes `num_runs`. A single pass is fine for most footage but will *bridge* the
 gap between runs (the resampler interpolates across the discontinuity).
 
-For strict per-run coherence, use
-`face_enhance_ltx_track_perrun_workflow_UI.json`: it sends each run through its
-own LTX pass via `FaceTrackSelectRun(run_index = 0, 1, …)` and chains the
-paste-backs. Read `num_runs` (run once), then provision that many branches.
-Extra branches are safe no-ops.
+For strict per-run coherence use the per-run graph for your resampler —
+`face_enhance_ltx_track_perrun_workflow_UI.json` or
+`face_enhance_h3_track_perrun_workflow_UI.json`. Each sends every run through its
+own pass via `FaceTrackSelectRun(run_index = 0, 1, …)` and chains the paste-backs, so
+run 1 composites onto run 0's result. Read `num_runs` (run once), then provision that
+many branches. Extra branches are safe no-ops.
+
+**The H3 per-run graph slices the audio per run**, which the LTX one has no need to:
+each branch gets its own `FaceTrackAudioSlice` driven by *that run's* `track_data`, so
+the lip-sync reference covers exactly the frames in the pass. Slicing once for the whole
+clip and feeding every branch the same audio would leave every run after the first out of
+sync, because a clip-wide slice spans all of them. Everything expensive is shared — the
+SAM3 front-end, all six model loaders, and the stateless `KSamplerSelect` / `RandomNoise`
+— so a second branch costs one more H3 pass, not a second model load.
 
 > ComfyUI graphs are static, so the number of LTX passes cannot resize itself to
 > the run count automatically — you provision a fixed number of branches.
@@ -451,14 +500,14 @@ Extra branches are safe no-ops.
   enough (raise `max_threshold_percent`), `min_threshold_percent ≥ max_threshold_percent`
   so the window is empty (lower `min_threshold_percent`, usually back to `0`),
   `hysteresis_percent` too wide, or the SAM3 track was empty (check `object_indices`).
-  Note: because the gate runs eagerly upstream, a downstream `LazySwitchKJ`
+  Note: because the gate runs eagerly upstream, a downstream If/Else Switch
   cannot skip it — this graceful no-op is what makes the skip-when-no-face case
   work end to end. `threshold_type` only selects which dimension the single
   `max_threshold_percent` measures (width/height/area).
 - **`ValueError: height and width must be > 0` at the Resize (ImageResizeKJv2)
   node** → this happened in older graphs when 0 frames qualified: the gate emitted
   a tiny no-op dummy that Resize's `divisible_by` (e.g. 32) rounded down to 0
-  (`16 - 16%32 = 0`). **Fixed** by driving `LazySwitchKJ.switch` from
+  (`16 - 16%32 = 0`). **Fixed** by driving the If/Else Switch's `switch` from
   `FaceTrackCropAndGate.enhanced` (slot 6): when no frame qualifies the branch —
   including Resize — is skipped entirely, so the dummy never reaches Resize.
   Re-import the current workflow (switch ← `enhanced`, **not** `MaskHasFace`) and
@@ -474,7 +523,14 @@ Extra branches are safe no-ops.
   the video model room to reframe/enlarge the face. Lower `padding`, lower the
   LTX denoise, or soften the prompt.
 - **`upscale_ratio` seems ignored** → make sure you're editing it on the crop
-  node itself (it's a widget), not a stale value upstream.
+  node itself (it's a widget), not a stale value upstream. Also check
+  `fixed_target_size` is OFF — with it ON, `target_size` is taken literally and
+  `upscale_ratio` plays no part (the toggle hides it to make that obvious).
+- **`target_size` is not the number you typed** → it is rounded **up** to a
+  multiple of 32. `700` becomes `704`.
+- **The widget toggles do nothing** → the package must export `WEB_DIRECTORY`
+  for ComfyUI to serve `web/` at all, and a *full process restart* is required
+  after adding it (Manager's reload does not re-register front-end scripts).
 
 ---
 
@@ -494,6 +550,33 @@ Extra branches are safe no-ops.
   (no `GetImageSizeAndCount` node is needed).
 - **Widget order matters** when hand-editing workflow JSON — values are
   positional.
+
+---
+
+## Tests
+
+```
+pip install pytest
+pytest
+```
+
+Plain `pytest` from the repo root is enough — `pyproject.toml` sets `testpaths` and the
+import mode. 39 tests, no GPU and no ComfyUI needed: they import `nodes.py` directly and
+drive it with small synthetic mask tracks, covering the size gate over a zoom, the
+hysteresis dead-band, crop-window sizing (including the tall-face regression), the
+`upscale_ratio` vs fixed `target_size` modes, the clip-length grids, paste-back in both
+blend modes, the no-op paths, and the audio slice.
+
+Two things about the setup that are not obvious:
+
+- **`--import-mode=importlib` is required, not preferred.** The repo root ships an
+  `__init__.py` (ComfyUI loads custom nodes as packages) *and* its directory name
+  contains a hyphen, so pytest's default `prepend` mode tries to import the root as a
+  package named `ComfyUI-VideoFaceDetailer` and fails on the illegal identifier.
+- **`__init__.py` falls back to an absolute import.** pytest still treats the root as a
+  package and imports `__init__.py` standalone, where `from .nodes import …` has no
+  parent package. The `try/except ImportError` fallback is what keeps that working — and
+  it costs nothing at runtime, since ComfyUI always takes the relative path.
 
 ---
 

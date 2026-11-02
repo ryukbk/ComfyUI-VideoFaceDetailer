@@ -11,7 +11,7 @@
       ],
       "size": [
         320,
-        200
+        418
       ],
       "flags": {},
       "order": 0,
@@ -161,7 +161,7 @@
       ],
       "size": [
         320,
-        200
+        202
       ],
       "flags": {},
       "order": 3,
@@ -250,7 +250,7 @@
       ],
       "size": [
         320,
-        200
+        262
       ],
       "flags": {},
       "order": 5,
@@ -386,7 +386,7 @@
       ],
       "size": [
         320,
-        200
+        558
       ],
       "flags": {},
       "order": 7,
@@ -484,7 +484,7 @@
       "type": "UNETLoader",
       "pos": [
         400,
-        380
+        648
       ],
       "size": [
         320,
@@ -517,7 +517,7 @@
       "type": "LoraLoaderModelOnly",
       "pos": [
         800,
-        380
+        648
       ],
       "size": [
         320,
@@ -556,7 +556,7 @@
       "type": "MiniMaxH3SigmaShift",
       "pos": [
         1200,
-        380
+        648
       ],
       "size": [
         320,
@@ -595,7 +595,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         1600,
-        380
+        648
       ],
       "size": [
         320,
@@ -634,7 +634,7 @@
       "type": "CLIPLoader",
       "pos": [
         2000,
-        380
+        648
       ],
       "size": [
         320,
@@ -668,7 +668,7 @@
       "type": "VAELoader",
       "pos": [
         2400,
-        380
+        648
       ],
       "size": [
         320,
@@ -705,7 +705,7 @@
       "type": "VAELoader",
       "pos": [
         2800,
-        380
+        648
       ],
       "size": [
         320,
@@ -740,11 +740,11 @@
       "type": "LoadImage",
       "pos": [
         0,
-        380
+        648
       ],
       "size": [
         320,
-        200
+        350
       ],
       "flags": {},
       "order": 15,
@@ -779,7 +779,7 @@
       "type": "KSamplerSelect",
       "pos": [
         3200,
-        380
+        648
       ],
       "size": [
         320,
@@ -812,10 +812,10 @@
       "type": "RandomNoise",
       "pos": [
         3600,
-        380
+        648
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -846,11 +846,11 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         0,
-        760
+        1088
       ],
       "size": [
         320,
-        200
+        210
       ],
       "flags": {},
       "order": 18,
@@ -922,11 +922,11 @@
       "type": "ImageResizeKJv2",
       "pos": [
         400,
-        760
+        1088
       ],
       "size": [
         320,
-        200
+        386
       ],
       "flags": {},
       "order": 19,
@@ -1005,7 +1005,7 @@
       "type": "FaceTrackAudioSlice",
       "pos": [
         800,
-        760
+        1088
       ],
       "size": [
         320,
@@ -1064,11 +1064,11 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         1200,
-        760
+        1088
       ],
       "size": [
         320,
-        200
+        446
       ],
       "flags": {},
       "order": 21,
@@ -1158,11 +1158,11 @@
       "type": "H3FaceRefine",
       "pos": [
         1600,
-        760
+        1088
       ],
       "size": [
         320,
-        200
+        354
       ],
       "flags": {},
       "order": 22,
@@ -1244,7 +1244,7 @@
       "type": "BasicGuider",
       "pos": [
         2000,
-        760
+        1088
       ],
       "size": [
         320,
@@ -1285,7 +1285,7 @@
       "type": "BasicScheduler",
       "pos": [
         2400,
-        760
+        1088
       ],
       "size": [
         320,
@@ -1325,7 +1325,7 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         2800,
-        760
+        1088
       ],
       "size": [
         320,
@@ -1387,7 +1387,7 @@
       "type": "VAEDecode",
       "pos": [
         3200,
-        760
+        1088
       ],
       "size": [
         320,
@@ -1428,11 +1428,11 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         3600,
-        760
+        1088
       ],
       "size": [
-        320,
-        200
+        321,
+        234
       ],
       "flags": {},
       "order": 27,
@@ -1479,11 +1479,11 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         0,
-        1520
+        1744
       ],
       "size": [
         320,
-        200
+        210
       ],
       "flags": {},
       "order": 28,
@@ -1555,11 +1555,11 @@
       "type": "ImageResizeKJv2",
       "pos": [
         400,
-        1520
+        1744
       ],
       "size": [
         320,
-        200
+        386
       ],
       "flags": {},
       "order": 29,
@@ -1638,7 +1638,7 @@
       "type": "FaceTrackAudioSlice",
       "pos": [
         800,
-        1520
+        1744
       ],
       "size": [
         320,
@@ -1697,11 +1697,11 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         1200,
-        1520
+        1744
       ],
       "size": [
         320,
-        200
+        446
       ],
       "flags": {},
       "order": 31,
@@ -1791,11 +1791,11 @@
       "type": "H3FaceRefine",
       "pos": [
         1600,
-        1520
+        1744
       ],
       "size": [
         320,
-        200
+        354
       ],
       "flags": {},
       "order": 32,
@@ -1877,7 +1877,7 @@
       "type": "BasicGuider",
       "pos": [
         2000,
-        1520
+        1744
       ],
       "size": [
         320,
@@ -1918,7 +1918,7 @@
       "type": "BasicScheduler",
       "pos": [
         2400,
-        1520
+        1744
       ],
       "size": [
         320,
@@ -1958,7 +1958,7 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         2800,
-        1520
+        1744
       ],
       "size": [
         320,
@@ -2020,7 +2020,7 @@
       "type": "VAEDecode",
       "pos": [
         3200,
-        1520
+        1744
       ],
       "size": [
         320,
@@ -2061,11 +2061,11 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         3600,
-        1520
+        1744
       ],
       "size": [
-        320,
-        200
+        321,
+        234
       ],
       "flags": {},
       "order": 37,
@@ -2112,7 +2112,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         0,
-        2280
+        2400
       ],
       "size": [
         320,
@@ -2163,11 +2163,11 @@
       "type": "VHS_VideoCombine",
       "pos": [
         400,
-        2280
+        2400
       ],
       "size": [
         320,
-        200
+        584
       ],
       "flags": {},
       "order": 39,

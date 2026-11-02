@@ -128,6 +128,13 @@ instead: the H3 diffusion model / text encoder / VAEs on the loaders and an
 video's **own audio** automatically — no separate track needed (swap in an
 isolated-vocals source on the audio-lock input if you want a cleaner signal).
 
+The workflows are laid out so that no node overlaps another on either renderer,
+the classic canvas or Nodes 2.0. `build_ui_workflow.py` generates them, spacing
+its grid by each node's drawn size in `node_sizes.json`. After changing a
+workflow's nodes, rebuild, then run `python3 measure_node_sizes.py <ComfyUI URL>`
+against a running ComfyUI that has the workflows' node packs installed (it needs
+Playwright and Google Chrome), and rebuild again.
+
 ---
 
 ## Nodes

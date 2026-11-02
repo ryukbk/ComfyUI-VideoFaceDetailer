@@ -10,6 +10,7 @@ Each node is declared explicitly with:
 Input/output slot lists are declared per node so link slot indices are exact.
 """
 import json
+import os
 
 # (input slot names in order, output (name,type) list in order, widget param
 #  names in order). Inputs that we connect via links are pulled out of widgets.
@@ -339,15 +340,53 @@ LAYOUT_PERFACE = {"1": (0, 0), "2": (0, 1), "3": (1, 1), "4": (2, 0), "5": (3, 0
                   "20": (9, 0), "21": (10, 0)}
 
 
+# Each node's drawn body size (below its title bar), the larger of the classic
+# canvas's and Nodes 2.0's, per workflow file and node id: measure_node_sizes.py
+# writes it from a running ComfyUI. Nodes 2.0 draws most nodes taller than the
+# classic canvas, so a grid of fixed rows that is clear on one overlaps on the
+# other.
+NODE_SIZES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_sizes.json")
+DEFAULT_SIZE = (320, 200)   # a node not measured yet
+TITLE_HEIGHT = 30           # LiteGraph.NODE_TITLE_HEIGHT, drawn above pos
+COLUMN_GAP = 80
+ROW_GAP = 60
+SPACER = 120                # an empty row or column: room for a group's header
+
+
+def _load_node_sizes():
+    try:
+        with open(NODE_SIZES_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+NODE_SIZES = _load_node_sizes()
+
+
 def build(node_dict, layout, out_path, groups=None):
-    # Grid spacing. Rows are generous (380) because several nodes render tall on
-    # load (VHS_LoadVideo/VideoCombine previews, the crop/resize widget stacks,
-    # SAM3 previews) — tight rows made them overlap the node below. The one node
-    # that still exceeds a row (MiniMaxH3ReferenceToVideo's multi-section prompt)
-    # is given an empty row beneath it in the layouts.
+    # The layout's (column, row) grid, each column as wide and each row as tall
+    # as its largest node as drawn (NODE_SIZES), so no node reaches the next
+    # column or row on either renderer. An empty row or column between them is a
+    # SPACER, which leaves room for a group's header (H3's group starts below one).
+    measured = NODE_SIZES.get(os.path.basename(out_path), {})
+
+    def size(key):
+        return list(measured.get(str(int(key)), DEFAULT_SIZE))
+
+    cells = {key: layout.get(key, (0, 0)) for key in node_dict}
+    widths, heights = {}, {}
+    for key, (cx, cy) in cells.items():
+        w, h = size(key)
+        widths[cx] = max(widths.get(cx, 0), w + COLUMN_GAP)
+        heights[cy] = max(heights.get(cy, 0), TITLE_HEIGHT + h + ROW_GAP)
+
+    def offset(pitches, index):
+        return sum(pitches.get(i, SPACER) for i in range(min(pitches), index))
+
     def pos(key):
-        cx, cy = layout.get(key, (0, 0))
-        return [cx * 400, cy * 380]
+        cx, cy = cells.get(key, layout.get(key, (0, 0)))
+        return [offset(widths, cx), offset(heights, cy)]
 
     nodes, links, link_id = [], [], 0
     order = list(node_dict.keys())
@@ -370,7 +409,7 @@ def build(node_dict, layout, out_path, groups=None):
         node_outputs = [{"name": n, "type": t, "links": [], "slot_index": i}
                         for i, (n, t) in enumerate(spec["outputs"])]
         nodes.append({
-            "id": int(key), "type": ntype, "pos": pos(key), "size": [320, 200],
+            "id": int(key), "type": ntype, "pos": pos(key), "size": size(key),
             "flags": {}, "order": order.index(key), "mode": 0,
             "inputs": node_inputs, "outputs": node_outputs,
             "properties": {"Node name for S&R": ntype}, "widgets_values": wv,
@@ -400,12 +439,11 @@ def build(node_dict, layout, out_path, groups=None):
     # selects exactly those nodes — e.g. for "Convert to Subgraph".
     group_list = []
     for g in (groups or []):
-        xs, ys = [], []
-        for k in g["keys"]:
-            x, y = pos(k)
-            xs.append(x); ys.append(y)
-        x0, y0 = min(xs) - 30, min(ys) - 70          # header space above
-        x1, y1 = max(xs) + 340, max(ys) + 240        # node ~320x200 + margin
+        boxes = [pos(k) + size(k) for k in g["keys"]]
+        x0 = min(x for x, _y, _w, _h in boxes) - 30
+        y0 = min(y for _x, y, _w, _h in boxes) - TITLE_HEIGHT - 70   # group header above
+        x1 = max(x + w for x, _y, w, _h in boxes) + 30
+        y1 = max(y + h for _x, y, _w, h in boxes) + 30
         group_list.append({
             "title": g["title"], "bounding": [x0, y0, x1 - x0, y1 - y0],
             "color": g.get("color", "#3f789e"), "font_size": 24, "flags": {},

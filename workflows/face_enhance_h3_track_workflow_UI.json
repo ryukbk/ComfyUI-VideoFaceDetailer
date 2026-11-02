@@ -11,7 +11,7 @@
       ],
       "size": [
         320,
-        200
+        418
       ],
       "flags": {},
       "order": 0,
@@ -72,7 +72,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         0,
-        760
+        794
       ],
       "size": [
         320,
@@ -118,7 +118,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         400,
-        760
+        794
       ],
       "size": [
         320,
@@ -156,11 +156,11 @@
       "type": "SAM3_VideoTrack",
       "pos": [
         800,
-        760
+        794
       ],
       "size": [
-        320,
-        200
+        321,
+        202
       ],
       "flags": {},
       "order": 3,
@@ -206,11 +206,11 @@
       "id": 5,
       "type": "SAM3_TrackToMask",
       "pos": [
-        1200,
-        760
+        1201,
+        794
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -249,7 +249,7 @@
       ],
       "size": [
         320,
-        200
+        262
       ],
       "flags": {},
       "order": 5,
@@ -336,11 +336,11 @@
       "id": 9,
       "type": "SAM3_TrackPreview",
       "pos": [
-        1600,
-        760
+        1602,
+        794
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -380,11 +380,11 @@
       "type": "FaceTrackCropAndGate",
       "pos": [
         0,
-        1140
+        1086
       ],
       "size": [
         320,
-        200
+        558
       ],
       "flags": {},
       "order": 7,
@@ -487,11 +487,11 @@
       "type": "ImageResizeKJv2",
       "pos": [
         400,
-        1140
+        1086
       ],
       "size": [
         320,
-        200
+        386
       ],
       "flags": {},
       "order": 8,
@@ -569,11 +569,11 @@
       "id": 40,
       "type": "UNETLoader",
       "pos": [
-        1200,
+        1201,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -602,11 +602,11 @@
       "id": 41,
       "type": "LoraLoaderModelOnly",
       "pos": [
-        1600,
+        1602,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -641,11 +641,11 @@
       "id": 42,
       "type": "CLIPLoader",
       "pos": [
-        2800,
+        2805,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -674,11 +674,11 @@
       "id": 43,
       "type": "VAELoader",
       "pos": [
-        3200,
+        3206,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -708,11 +708,11 @@
       "id": 44,
       "type": "VAELoader",
       "pos": [
-        3600,
+        3607,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -745,8 +745,8 @@
         0
       ],
       "size": [
-        320,
-        200
+        321,
+        350
       ],
       "flags": {},
       "order": 14,
@@ -780,11 +780,11 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         0,
-        1520
+        1734
       ],
       "size": [
         320,
-        200
+        446
       ],
       "flags": {},
       "order": 15,
@@ -874,10 +874,10 @@
       "type": "FaceTrackAudioSlice",
       "pos": [
         800,
-        1140
+        1086
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -933,11 +933,11 @@
       "type": "H3FaceRefine",
       "pos": [
         800,
-        1520
+        1734
       ],
       "size": [
-        320,
-        200
+        321,
+        354
       ],
       "flags": {},
       "order": 17,
@@ -1018,11 +1018,11 @@
       "id": 58,
       "type": "MiniMaxH3SigmaShift",
       "pos": [
-        2000,
+        2003,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1057,11 +1057,11 @@
       "id": 56,
       "type": "ModelAttentionBackend",
       "pos": [
-        2400,
+        2404,
         0
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1095,11 +1095,11 @@
       "id": 51,
       "type": "BasicGuider",
       "pos": [
-        1200,
-        1520
+        1201,
+        1734
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1136,11 +1136,11 @@
       "id": 52,
       "type": "BasicScheduler",
       "pos": [
-        1600,
-        1520
+        1602,
+        1734
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1176,11 +1176,11 @@
       "id": 53,
       "type": "KSamplerSelect",
       "pos": [
-        2000,
-        1520
+        2003,
+        1734
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1208,11 +1208,11 @@
       "id": 54,
       "type": "RandomNoise",
       "pos": [
-        2400,
-        1520
+        2404,
+        1734
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1242,10 +1242,10 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         800,
-        1900
+        2270
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1304,10 +1304,10 @@
       "type": "VAEDecode",
       "pos": [
         800,
-        2280
+        2560
       ],
       "size": [
-        320,
+        321,
         200
       ],
       "flags": {},
@@ -1345,11 +1345,11 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         0,
-        2280
+        2560
       ],
       "size": [
         320,
-        200
+        234
       ],
       "flags": {},
       "order": 26,
@@ -1396,7 +1396,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         400,
-        2280
+        2560
       ],
       "size": [
         320,
@@ -1446,12 +1446,12 @@
       "id": 21,
       "type": "VHS_VideoCombine",
       "pos": [
-        4000,
+        4008,
         0
       ],
       "size": [
-        320,
-        200
+        321,
+        584
       ],
       "flags": {},
       "order": 28,
@@ -1941,9 +1941,9 @@
       "title": "H3 Face Detailer \u2014 select this group, then 'Convert to Subgraph'",
       "bounding": [
         -30,
-        690,
-        2770,
-        1830
+        694,
+        2785,
+        2130
       ],
       "color": "#3f789e",
       "font_size": 24,

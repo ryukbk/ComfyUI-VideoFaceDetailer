@@ -33,6 +33,8 @@ Install: clone this repo into ComfyUI/custom_nodes/ComfyUI-VideoFaceDetailer/
 and fully restart ComfyUI.
 """
 
+import math
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -76,6 +78,114 @@ def _gaussian_blur_2d(mask_hw, radius):
     x = F.conv2d(x, kh, padding=(0, r))
     x = F.conv2d(x, kv, padding=(r, 0))
     return x[0, 0].clamp_(0.0, 1.0)
+
+
+# ── H3 latent masks: the face region, on the latent grid H3 reads ─────────────
+# A noise mask acts per latent cell, so a pixel mask has to be reduced onto
+# that grid. MiniMax H3's video VAE encodes 17-frame chunks into 5 latents
+# covering 1, 4, 4, 4, 4 frames, and drops the last 3 latents of the whole
+# clip; its DiT then reads the mask per 2x2 latent patch, taking the patch's
+# strongest value. A latent cell is to be regenerated if ANY of the pixels or
+# frames it covers is (max), which is the reduction below. The approach
+# follows drozbay's MaskVidExperiments (Mask To Latent Space).
+
+def h3_latent_groups(n_frames, vae=None):
+    """[(start, end)] pixel frames feeding each latent frame of an H3 clip of
+    `n_frames`, from the video VAE's chunking (clip_length, vae_ratio_t,
+    token_drop on its first_stage_model), else H3's own (17, 4, 3)."""
+    inner = getattr(vae, "first_stage_model", None)
+    clip_len = int(getattr(inner, "clip_length", 17) or 17)
+    ratio = int(getattr(inner, "vae_ratio_t", 4) or 4)
+    drop = int(getattr(inner, "token_drop", 3) or 0)
+    per_chunk = -(-clip_len // ratio)
+    spans = [clip_len - ratio * (per_chunk - 1)] + [ratio] * (per_chunk - 1)
+    n = max(1, int(n_frames))
+    groups = []
+    for chunk in range(-(-n // clip_len)):
+        start = chunk * clip_len
+        for span in spans:
+            groups.append((start, start + span))
+            start += span
+    if drop > 0:
+        groups = groups[:max(1, len(groups) - drop)]
+    # Frames past the clip are the encoder's repeats of the last one; the
+    # dropped latents' frames belong to the last kept one.
+    groups = [(min(a, n - 1), max(min(b, n), min(a, n - 1) + 1)) for a, b in groups]
+    groups[-1] = (groups[-1][0], n)
+    return groups
+
+
+def _even_groups(n_frames, n_latents):
+    """n_frames split evenly over n_latents, for a latent off H3's grid."""
+    edges = np.linspace(0, n_frames, n_latents + 1).round().astype(int)
+    return [(int(min(a, n_frames - 1)), int(max(b, min(a, n_frames - 1) + 1)))
+            for a, b in zip(edges[:-1], edges[1:])]
+
+
+def _grow_mask(mask_hw, px):
+    """Dilate (px > 0) or erode (px < 0) a [H,W] mask by |px| pixels (square)."""
+    r = abs(int(px))
+    if r == 0:
+        return mask_hw
+    x = mask_hw[None, None]
+    if px > 0:
+        x = F.max_pool2d(x, 2 * r + 1, stride=1, padding=r)
+    else:
+        x = -F.max_pool2d(-x, 2 * r + 1, stride=1, padding=r)
+    return x[0, 0]
+
+
+def face_region_masks(entries, height, width, grow_px=0, feather_px=0):
+    """[n, H, W] face masks of a face clip, from its track_data entries' crop
+    masks (the tracked face, cut to each frame's crop box) resized to the clip,
+    grown by grow_px and feathered by feather_px (clip pixels). A frame with
+    no mask of its own (a pad frame, repeating the last) uses the closest
+    earlier one's, else the next one's, else the whole frame."""
+    masks, last = [], None
+    for e in entries:
+        cm = e.get("cmask")
+        if cm is not None and cm.numel() > 0:
+            last = cm
+        masks.append(last)
+    first = next((m for m in masks if m is not None), None)
+    out = torch.empty(len(entries), height, width, dtype=torch.float32)
+    for i, cm in enumerate(masks):
+        cm = cm if cm is not None else first
+        if cm is None:
+            out[i] = 1.0
+            continue
+        m = F.interpolate(cm.to(torch.float32)[None, None], size=(height, width), mode="nearest")[0, 0]
+        m = _grow_mask(m, grow_px)
+        out[i] = _gaussian_blur_2d(m, feather_px)
+    return out
+
+
+def latent_noise_mask(frame_values, groups, lat_h, lat_w, region=None):
+    """[latent_t, lat_h, lat_w] noise mask: each frame's strength (frame_values,
+    [n]) times its region ([n, H, W] in 0..1, or None for the whole frame),
+    reduced to latent cells by the max over every pixel and frame a cell
+    covers."""
+    vals = torch.as_tensor(frame_values, dtype=torch.float32).view(-1, 1, 1)
+    if region is None:
+        per_frame = vals.expand(-1, lat_h, lat_w)
+    else:
+        pooled = F.adaptive_max_pool2d(region[:, None], (lat_h, lat_w))[:, 0]
+        per_frame = pooled * vals
+    return torch.stack([per_frame[a:b].amax(0) for a, b in groups])
+
+
+def latent_mask_preview(latent_mask, groups, height, width, n_frames):
+    """The noise mask as H3 acts on it, at clip resolution: each 2x2 latent
+    patch at its strongest value, each latent frame on the frames it covers."""
+    t, lh, lw = latent_mask.shape
+    m = F.pad(latent_mask[:, None], (0, lw % 2, 0, lh % 2), mode="replicate")
+    m = F.max_pool2d(m, 2)
+    m = m.repeat_interleave(2, -2).repeat_interleave(2, -1)[:, :, :lh, :lw]
+    m = F.interpolate(m, size=(height, width), mode="nearest")[:, 0]
+    out = torch.zeros(n_frames, height, width, dtype=torch.float32)
+    for k, (a, b) in enumerate(groups):
+        out[a:b] = m[min(k, t - 1)]
+    return out
 
 
 def _connected_components(mask_bool):
@@ -439,6 +549,152 @@ def _frame_face_box(mask_bool):
     return (int(x0), int(y0), int(x1), int(y1), float(cx), float(cy))
 
 
+# ── whole-clip crop planning ──────────────────────────────────────────────────
+# The follow mode decides each frame's crop from the frames before it (an EMA):
+# it either follows every wobble of the mask or lags behind the head. Planning
+# a run's crops from all of its frames at once lets the crop hold still while
+# the face moves inside it, move only as far as it must when the face would
+# leave it, start moving before it gets there, and ignore a mask that drops
+# out for a few frames. The idea follows drozbay's MaskVidExperiments (Subject
+# Crop, its "tracked" mode); this is a simpler planner of its own.
+
+CROP_PLANNING = ("follow", "whole_clip")
+
+
+def _median_track(values, window):
+    """Each value replaced by the median of the `window` frames around it (odd,
+    held at the ends): a mask that drops out for a few frames is ignored."""
+    v = np.asarray(values, dtype=np.float64)
+    r = max(0, int(window) // 2)
+    if r == 0 or v.size < 2:
+        return v.copy()
+    padded = np.pad(v, r, mode="edge")
+    return np.array([np.median(padded[t:t + 2 * r + 1]) for t in range(v.size)])
+
+
+def _lazy_path(lo, hi):
+    """The path through the corridor [lo[t], hi[t]] that moves least in total:
+    it holds still, and moves only as far as the corridor makes it. It starts
+    where holding still serves the frames ahead best (a backward pass)."""
+    n = len(lo)
+    c = (lo[-1] + hi[-1]) / 2.0
+    for t in range(n - 1, -1, -1):          # backward: where to start
+        c = min(max(c, lo[t]), hi[t])
+    path = np.empty(n)
+    for t in range(n):
+        c = min(max(c, lo[t]), hi[t])
+        path[t] = c
+    return path
+
+
+def _ease(path, lo, hi, frames):
+    """Smooth the path's moves over about `frames` frames, centred, so the crop
+    eases in before the face gets there and out after; kept in the corridor."""
+    if frames <= 0 or len(path) < 3:
+        return path
+    sigma = max(0.5, frames / 3.0)
+    r = int(math.ceil(3 * sigma))
+    xs = np.arange(-r, r + 1)
+    k = np.exp(-(xs ** 2) / (2 * sigma * sigma))
+    k /= k.sum()
+    smooth = np.convolve(np.pad(path, r, mode="edge"), k, mode="valid")
+    return np.clip(smooth, lo, hi)
+
+
+PLAN_SIZES = ("fixed", "follow")
+
+
+def _rate_limited(values, rate):
+    """The least sizes >= values whose frame-to-frame ratio stays within `rate`
+    (> 1; else unlimited): every size pulls up its neighbours by at most
+    `rate` per frame, so a needed size is reached in time, never too fast."""
+    v = np.asarray(values, dtype=np.float64)
+    if rate <= 1.0 or v.size < 2:
+        return v
+    step = math.log(rate)
+    out = np.log(v)
+    for t in range(1, out.size):              # forward, then backward
+        out[t] = max(out[t], out[t - 1] - step)
+    for t in range(out.size - 2, -1, -1):
+        out[t] = max(out[t], out[t + 1] - step)
+    return np.exp(out)
+
+
+def plan_track_crops(frames, boxes, sides, width, height, padding, hold=0.5,
+                     ease_frames=12, window=9, cut_jump=0.5, size_mode="follow", max_zoom_rate=1.02):
+    """{frame: (x0, y0, side)} for the enhanced `frames` (sorted source indices),
+    planned over each run (consecutive frames) as a whole.
+
+    boxes[i] is the face box (x0, y0, x1, y1, cx, cy) of frame i, sides[k] the
+    crop side of frames[k] (face + padding, already clamped). Per run, and per
+    shot within it (the face's centre jumping by more than cut_jump x the crop
+    side starts a new one): one crop side, the largest the run needs after
+    the median over `window` frames; the crop then holds still while the face
+    keeps at least (1 - hold) of its padding inside it, and moves only as far
+    as it must, eased over `ease_frames` frames.
+
+    size_mode "follow" plans the size the same way instead of one per shot: it
+    holds still while the face's size stays within the same margin, changes
+    only as far as it must, eased, never below what keeps (1 - hold) of the
+    padding, and by at most max_zoom_rate per frame (1 = no cap), starting
+    early enough to get there."""
+    plan, report = {}, []
+    cap = min(width, height)
+    runs, start = [], 0
+    for k in range(1, len(frames) + 1):
+        if k == len(frames) or frames[k] != frames[k - 1] + 1:
+            runs.append(list(range(start, k)))
+            start = k
+    for run in runs:
+        x0 = _median_track([boxes[frames[k]][0] for k in run], window)
+        y0 = _median_track([boxes[frames[k]][1] for k in run], window)
+        x1 = _median_track([boxes[frames[k]][2] for k in run], window)
+        y1 = _median_track([boxes[frames[k]][3] for k in run], window)
+        side_m = _median_track([sides[k] for k in run], window)
+        fcx, fcy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        extent = np.maximum(x1 - x0 + 1, y1 - y0 + 1)
+        # Shots: a jump in the (median) face centre is a cut, not motion.
+        shots, s0 = [], 0
+        for t in range(1, len(run) + 1):
+            if t == len(run) or math.hypot(fcx[t] - fcx[t - 1], fcy[t] - fcy[t - 1]) > cut_jump * side_m[t - 1]:
+                shots.append(range(s0, t))
+                s0 = t
+        for shot in shots:
+            idx = np.array(list(shot))
+            need = extent[idx] * (1.0 + float(padding) * (1.0 - float(hold)))
+            if size_mode == "follow":
+                # The size's own corridor: from what keeps the held padding, to as
+                # far above the padded size; held still inside it, then eased.
+                target = side_m[idx]
+                lo_s = np.minimum(need, target)
+                hi_s = target + (target - lo_s)
+                sizes = _ease(_lazy_path(lo_s, hi_s), lo_s, hi_s, int(ease_frames))
+                sizes = _rate_limited(np.maximum(sizes, need), float(max_zoom_rate))
+                s = np.clip(np.round(sizes), 8, cap).astype(int)
+            else:
+                s = np.full(len(idx), int(max(8, min(int(round(side_m[idx].max())), cap))))
+            slack = np.maximum(0.0, (s - need) / 2.0)
+            paths = []
+            for centre, size in ((fcx[idx], width), (fcy[idx], height)):
+                lo = np.clip(centre - slack, s / 2.0, size - s / 2.0)
+                hi = np.clip(centre + slack, s / 2.0, size - s / 2.0)
+                path = _ease(_lazy_path(lo, hi), lo, hi, int(ease_frames))
+                paths.append(path)
+            moved = float(np.abs(np.diff(paths[0])).sum() + np.abs(np.diff(paths[1])).sum())
+            still = int((np.hypot(np.diff(paths[0]), np.diff(paths[1])) < 0.5).sum())
+            for j, t in enumerate(idx):
+                sj = int(s[j])
+                bx = int(round(paths[0][j] - sj / 2.0))
+                by = int(round(paths[1][j] - sj / 2.0))
+                plan[frames[run[t]]] = (max(0, min(bx, width - sj)), max(0, min(by, height - sj)), sj)
+            sized = (f"{int(s.min())}-{int(s.max())}px ({int((np.diff(s) == 0).sum())}/"
+                     f"{max(1, len(idx) - 1)} steps same size)" if size_mode == "follow"
+                     else f"{int(s[0])}px")
+            report.append(f"{len(idx)} frames at {sized}, still on {still}/{max(1, len(idx) - 1)} "
+                          f"steps, moved {moved:.0f}px")
+    return plan, report
+
+
 class FaceTrackCropAndGate:
     @classmethod
     def INPUT_TYPES(cls):
@@ -544,6 +800,43 @@ class FaceTrackCropAndGate:
                                                    "edge. Raising it gives the resampler more to work with but "
                                                    "costs area, not length: 1280 is ~2.8x the latent tokens of "
                                                    "768."}),
+                # Appended last, like the two above, so saved workflows keep their values.
+                "crop_planning": (list(CROP_PLANNING), {"default": "follow",
+                                        "tooltip": "How the crop moves with the face.\n"
+                                                   "follow (default, as before): frame by frame, from the "
+                                                   "frames before it - smooth_alpha and size_smooth_alpha.\n"
+                                                   "whole_clip: each run planned from all of its frames at "
+                                                   "once - one crop size per run, held still while the face "
+                                                   "moves inside it, moved only as far as needed and eased in "
+                                                   "ahead of time, and blind to a mask that drops out for a few "
+                                                   "frames (plan_hold, plan_ease_frames, plan_window). A video "
+                                                   "model reads a wobbling crop as camera shake."}),
+                "plan_hold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                                        "tooltip": "whole_clip: how much of the padding the face may use up "
+                                                   "before the crop moves. 0 keeps the face centred (the crop "
+                                                   "follows it); 1 holds the crop until the face reaches its "
+                                                   "edge. 0.5 keeps at least half the padding round the face."}),
+                "plan_ease_frames": ("INT", {"default": 12, "min": 0, "max": 120, "step": 1,
+                                        "tooltip": "whole_clip: frames over which each move of the crop eases "
+                                                   "in and out, centred on it, so it starts before the face "
+                                                   "gets there. 0 = move exactly as far as needed, abruptly."}),
+                "plan_window": ("INT", {"default": 9, "min": 1, "max": 61, "step": 2,
+                                        "tooltip": "whole_clip: frames of the median the face box is read "
+                                                   "through. A mask that shrinks, grows or drops out for fewer "
+                                                   "than half this many frames does not move the crop."}),
+                "plan_size": (list(PLAN_SIZES), {"default": "follow",
+                                        "tooltip": "whole_clip: the crop size.\n"
+                                                   "fixed: one size per shot, the largest it needs - "
+                                                   "the zoom never changes within it.\n"
+                                                   "follow (default): planned like the position - held still while the "
+                                                   "face's size stays within plan_hold's margin, changed only "
+                                                   "as far as needed, eased over plan_ease_frames and at most "
+                                                   "plan_max_zoom_rate per frame, starting ahead of time. For a "
+                                                   "face that comes closer or moves away."}),
+                "plan_max_zoom_rate": ("FLOAT", {"default": 1.02, "min": 1.0, "max": 2.0, "step": 0.005,
+                                        "tooltip": "whole_clip, plan_size follow: the most the crop size may "
+                                                   "change from one frame to the next, as a ratio. 1.02 = 2% a "
+                                                   "frame (about 1.6x a second at 24 fps). 1 = no cap."}),
             },
         }
 
@@ -560,7 +853,9 @@ class FaceTrackCropAndGate:
     def crop(self, images, mask_track, upscale_ratio, threshold_type, max_threshold_percent,
              hysteresis_percent, padding, smooth_alpha, max_size_deviation=0.5, size_smooth_alpha=0.0,
              min_threshold_percent=0.1, resampler="minimax_h3",
-             fixed_target_size=True, target_size=768):
+             fixed_target_size=True, target_size=768, crop_planning="follow",
+             plan_hold=0.5, plan_ease_frames=12, plan_window=9, plan_size="follow",
+             plan_max_zoom_rate=1.02):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -822,6 +1117,14 @@ class FaceTrackCropAndGate:
         # where no margin absorbs the jitter. Smoothing makes the crop size (and
         # thus the zoom) vary only gradually, following genuine size changes while
         # rejecting per-frame mask noise.
+        planned, plan_note = None, ""
+        if crop_planning == "whole_clip":
+            planned, plan_report = plan_track_crops(
+                [pf[0] for pf in per_frame], boxes, [pf[3] for pf in per_frame], W, H, padding,
+                plan_hold, plan_ease_frames, plan_window, size_mode=plan_size,
+                max_zoom_rate=plan_max_zoom_rate)
+            plan_note = " | whole_clip plan: " + "; ".join(plan_report)
+            print("[FaceTrackCropAndGate]" + plan_note[2:])
         clip, entries = [], []
         last_center = None
         last_side = None
@@ -845,6 +1148,8 @@ class FaceTrackCropAndGate:
             half = s // 2
             x0 = int(round(sm[0] - half)); y0 = int(round(sm[1] - half))
             x0 = max(0, min(x0, W - s)); y0 = max(0, min(y0, H - s))
+            if planned is not None:
+                x0, y0, s = planned[i]
             crop = images[i, y0:y0 + s, x0:x0 + s, :]  # smoothed-size box around face
             # Crop the FACE MASK to the same box (kept at native s×s — small/cheap).
             # paste-back uses it as a face-shaped, feathered alpha so only face
@@ -923,7 +1228,7 @@ class FaceTrackCropAndGate:
         # from this directly instead of a separate GetImageSizeAndCount node.
         # enhanced = True: >=1 frame qualified, so the enhance branch should run.
         return (face_clip, data, target_size, n_real, n_runs, target_len,
-                n_real > 0, _make_report(n_real, _drop_note))
+                n_real > 0, _make_report(n_real, _drop_note + plan_note))
 
 
 class FaceTrackSelectRun:
@@ -1290,13 +1595,31 @@ class H3FaceRefine:
                     "tooltip": "Smooth the strength curve over time; abrupt denoise changes read as a pop."}),
             },
             "optional": {
+                "mask_region": (["crop", "face"], {"default": "crop",
+                    "tooltip": "Where the clip is resampled. crop: the whole crop (as before). face: "
+                               "only the tracked face (its mask from the crop node), grown and "
+                               "feathered below; everything else in the crop is kept as it is. Either "
+                               "way the mask is reduced onto H3's latent grid: a latent cell is "
+                               "resampled if any pixel or frame it covers is."}),
+                "mask_grow": ("INT", {"default": 32, "min": -256, "max": 512, "step": 4,
+                    "tooltip": "face: grow (+) or shrink (-) the face mask by this many pixels of the "
+                               "upscaled clip, so hair and jawline are resampled too. H3 reads the "
+                               "mask in 32 px blocks at the clip's size."}),
+                "mask_feather": ("INT", {"default": 16, "min": 0, "max": 256, "step": 4,
+                    "tooltip": "face: soften the grown mask's edge over this many pixels. H3 takes a "
+                               "soft mask as a lower strength there, so the edge blends in."}),
                 "audio_vae": ("VAE", {"tooltip": "H3 AUDIO vae. Needed with `audio` for lip-sync."}),
                 "audio": ("AUDIO", {"tooltip": "Source audio (or isolated vocals). Omit to skip lip-sync."}),
             },
         }
 
-    RETURN_TYPES = ("MODEL", "LATENT", "STRING")
-    RETURN_NAMES = ("model", "av_latent", "report")
+    RETURN_TYPES = ("MODEL", "LATENT", "STRING", "MASK")
+    RETURN_NAMES = ("model", "av_latent", "report", "mask_preview")
+    OUTPUT_TOOLTIPS = ("Patched model -> BasicGuider / BasicScheduler.",
+                       "Prepared AV latent -> SamplerCustomAdvanced.latent_image.",
+                       "What was done.",
+                       "The video noise mask as H3 acts on it, one mask per clip frame at the "
+                       "clip's size: 1 resampled at full strength, 0 kept.")
     FUNCTION = "run"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("MiniMax H3 face-refine setup: img2img inject + audio lip-sync + "
@@ -1307,7 +1630,8 @@ class H3FaceRefine:
 
     def run(self, model, av_latent, images, vae, track_data,
             strength_small_face, strength_large_face,
-            gamma, smooth_frames, audio_vae=None, audio=None):
+            gamma, smooth_frames, audio_vae=None, audio=None,
+            mask_region="crop", mask_grow=32, mask_feather=16):
         import comfy.nested_tensor
         reports = []
 
@@ -1421,11 +1745,35 @@ class H3FaceRefine:
             ker /= ker.sum()
             strength = np.convolve(np.pad(strength, r, mode="edge"), ker, mode="valid")
         strength = np.clip(strength, 0.0, 1.0)
-        s = torch.from_numpy(strength).float().view(1, 1, -1)
-        s = F.interpolate(s, size=int(latent_t), mode="linear", align_corners=True)
-        s = s.view(1, 1, int(latent_t), 1, 1).to(video_latent.device, torch.float32)
+        # Per clip frame (entries are one per frame of the clip, pads included).
+        n_frames, clip_h, clip_w = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+        if strength.size != n_frames:
+            strength = np.interp(np.linspace(0, strength.size - 1, n_frames),
+                                 np.arange(strength.size), strength)
+        # Each latent frame from the clip frames it encodes (H3: 1, 4, 4, 4, 4 per
+        # 17, the last 3 latents dropped), at the strongest of them.
+        groups = h3_latent_groups(n_frames, vae)
+        if len(groups) != latent_t:
+            groups = _even_groups(n_frames, latent_t)
+            reports.append(f"WARNING {latent_t} latent frames for {n_frames} clip frames is off "
+                           f"H3's grid: frames spread evenly")
+        lat_h, lat_w = int(video_latent.shape[-2]), int(video_latent.shape[-1])
+        region = None
+        if mask_region == "face":
+            region = face_region_masks(entries, clip_h, clip_w, mask_grow, mask_feather)
+            if len(region) != n_frames:
+                region = F.interpolate(region[None, None], size=(n_frames, clip_h, clip_w),
+                                       mode="nearest")[0, 0]
+        lmask = latent_noise_mask(strength, groups, lat_h, lat_w, region)
+        mask_preview = latent_mask_preview(lmask, groups, clip_h, clip_w, n_frames)
+        if region is not None:
+            reports.append(f"mask: face (grow {int(mask_grow)} px, feather {int(mask_feather)} px), "
+                           f"{float((mask_preview > 0).float().mean()) * 100:.0f}% of the clip resampled")
+        else:
+            reports.append("mask: whole crop")
+        s = lmask.view(1, 1, int(latent_t), lat_h, lat_w).to(video_latent.device, torch.float32)
         vmask = s.expand(video_latent.shape[0], video_latent.shape[1], latent_t,
-                         video_latent.shape[-2], video_latent.shape[-1]).contiguous()
+                         lat_h, lat_w).contiguous()
         prev = cur.get("noise_mask")
         if prev is not None and (isinstance(prev, comfy.nested_tensor.NestedTensor)
                                  or getattr(prev, "is_nested", False)):
@@ -1442,7 +1790,7 @@ class H3FaceRefine:
 
         report = "[H3FaceRefine] " + " | ".join(reports)
         print(report)
-        return (out_model, cur, report)
+        return (out_model, cur, report, mask_preview)
 
 
 class FaceTrackAudioSlice:

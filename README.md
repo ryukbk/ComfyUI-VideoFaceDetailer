@@ -128,6 +128,10 @@ instead: the H3 diffusion model / text encoder / VAEs on the loaders and an
 video's **own audio** automatically — no separate track needed (swap in an
 isolated-vocals source on the audio-lock input if you want a cleaner signal).
 
+The tracked workflows ship with Face Track Crop & Gate's `crop_planning` on
+**whole_clip** (with `plan_size` follow); the node's own default stays **follow**,
+so workflows saved before it existed keep working as they did.
+
 The workflows are laid out so that no node overlaps another on either renderer,
 the classic canvas or Nodes 2.0. `build_ui_workflow.py` generates them, spacing
 its grid by each node's drawn size in `node_sizes.json`. After changing a
@@ -160,6 +164,12 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `resampler` | choice | minimax_h3 | which resampler this clip feeds, so it is padded to that model's valid frame-count grid: **minimax_h3** (default) → `17k+5` (MiniMax H3); **ltx** → `8n+1` (LTXVImgToVideo). The padded frame count is what you wire into the resampler's `length` (use the `frame_count` output), so paste-back stays 1:1. Set **ltx** when feeding the LTX workflows. |
 | `fixed_target_size` | BOOLEAN | **True** | which knob decides the resampler's working size. **ON (default)**: `target_size` is the fixed edge length below, whatever the face size — one known resolution for every frame, and the canvas never tracks a small face down to a size the model renders badly. **OFF**: `target_size = crop window × upscale_ratio`, so it follows the face. The toggle **hides whichever of the two is inactive** (`web/size_mode_toggle.js`), so with the default ON you will see `target_size` and not `upscale_ratio`. |
 | `target_size` | INT | **768** | square edge length in pixels when `fixed_target_size` is ON; ignored otherwise. **Rounded UP to a multiple of 32 internally**, so a value from a link or an older workflow stays valid for LTX and H3. `768` is H3's native short edge. Raising it gives the resampler more to work with but costs **area**, not length — 1280 is ~2.8× the latent tokens of 768. |
+| `crop_planning` | choice | **follow** | how the crop moves with the face. **follow** (as before): frame by frame from the frames before it, through `smooth_alpha` / `size_smooth_alpha`. **whole_clip**: each run planned from all its frames at once — see [Whole-clip crop planning](#whole-clip-crop-planning). The toggle shows only the active mode's settings. |
+| `plan_hold` | FLOAT | 0.5 | whole_clip: how much of the `padding` the face may use up before the crop moves. 0 keeps the face centred; 1 holds the crop until the face reaches its edge. |
+| `plan_ease_frames` | INT | 12 | whole_clip: frames each move eases in and out over, centred on the move, so the crop starts before the face gets there. 0 = move abruptly, exactly as far as needed. |
+| `plan_window` | INT | 9 | whole_clip: frames of the median the face box is read through; a mask that shrinks, grows or drops out for fewer than half this many frames does not move the crop. |
+| `plan_size` | choice | **follow** | whole_clip: **follow** plans the size like the position, for a face that comes closer or moves away; **fixed** keeps one crop size per shot (the zoom never changes in it). |
+| `plan_max_zoom_rate` | FLOAT | 1.02 | whole_clip with `plan_size` follow: the most the crop size may change from one frame to the next, as a ratio (1.02 = 2% a frame, about 1.6× a second at 24 fps; 1 = no cap). Shown only then. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
 (INT), `enhanced_frames` (INT), `num_runs` (INT), `frame_count` (INT — the
@@ -201,6 +211,42 @@ path too — a run where nothing qualified is exactly when you need it.
 > `smooth_alpha = 1.0` (exact position) and lower `size_smooth_alpha`
 > (≈0.3) with low `padding`. Increasing `padding` also reduces apparent wobble
 > but lets the resampler reframe the face — prefer the smoothing controls.
+
+#### Whole-clip crop planning
+
+`follow` decides each frame's crop from the frames before it, so it either
+follows every wobble of the mask (`smooth_alpha` 1) or lags behind the head
+(lower), and a video resampler reads a wobbling crop as camera shake.
+`crop_planning = whole_clip` plans each run (each block of consecutive enhanced
+frames) from all its frames at once:
+
+- **one crop size per run** (`plan_size` fixed): the largest the run needs,
+  after a median over `plan_window` frames (so one bloomed mask frame does not
+  set it), within `max_size_deviation` as before. With `plan_size` **follow** (the
+  default) the size is planned too: it holds still while the face's (median) size stays
+  within the same `plan_hold` margin, so mask noise does not make it breathe;
+  changes only as far as it must; is eased over `plan_ease_frames`; never drops
+  below what keeps `1 − plan_hold` of the padding; and changes by at most
+  `plan_max_zoom_rate` a frame, starting early enough to be big enough in time.
+  Every crop is resized to the same clip size, so the face keeps the same share
+  of it - MaskVidExperiments' *zoomed* mode, planned instead of smoothed;
+- **held still** while the face moves inside it, keeping at least
+  `1 − plan_hold` of its padding round the face;
+- **moved only as far as it must** when the face would leave that margin, and
+  started where holding still serves the frames ahead best;
+- **eased** over `plan_ease_frames`, centred on each move, so it starts before
+  the face gets there and settles after;
+- **blind to dropouts**: the face box is read through the median, so a mask
+  that loses half the face for a few frames does not move it;
+- **cuts**: a jump of the face's centre by more than half the crop side starts a
+  new shot, planned on its own with one clean jump.
+
+The report and the console list each shot's crop size, on how many steps it
+held still, and how far it moved. Paste-back is unchanged: it uses each frame's
+planned box. The idea follows the *tracked* mode of drozbay's
+[MaskVidExperiments](https://github.com/drozbay/MaskVidExperiments) Subject Crop,
+(and, with `plan_size` follow, its *zoomed* mode), with a simpler planner of its
+own; it stays square, like follow mode.
 
 ### Face Track Paste Back (coherent) — `FaceTrackPasteBack`
 Downsamples each processed face back to its original crop size and composites it
@@ -293,10 +339,41 @@ upscaled `face_clip`), `vae` (H3 **video** VAE), `track_data`; and optionally
 `audio_vae` (H3 **audio** VAE) + `audio` for lip-sync (omit both to skip it). Plus
 the per-frame-denoise widgets: `strength_small_face` (applied at the gate's
 `min_threshold_percent`), `strength_large_face` (at `max_threshold_percent`),
-`gamma`, `smooth_frames`.
+`gamma`, `smooth_frames`; and the mask widgets `mask_region`, `mask_grow`,
+`mask_feather` (see [Face-region mask](#face-region-mask)).
 **Outputs:** patched `model` (→ `BasicGuider` / `BasicScheduler`), `av_latent`
-(→ `SamplerCustomAdvanced.latent_image`), and a `report` string. Set the overall
+(→ `SamplerCustomAdvanced.latent_image`), a `report` string, and `mask_preview`
+(MASK, one per clip frame: the noise mask as H3 acts on it). Set the overall
 strength with `BasicScheduler`'s `denoise`.
+
+#### Face-region mask
+
+The noise mask says how strongly each part of the clip is resampled. H3 reads
+it per latent cell: a 16 × 16 pixel block of one latent frame, and its DiT takes
+the strongest value of each 2 × 2 block of cells (32 × 32 pixels). Its video VAE
+encodes each 17-frame chunk into 5 latent frames, covering 1, 4, 4, 4 and 4
+frames, and drops the clip's last 3 latents, so a 124-frame clip has 37. The
+mask is built per clip frame and reduced onto that grid by the **max**: a cell is
+resampled if any pixel or frame it covers is, at the strongest strength among
+them. (Before this, the per-frame strength was stretched linearly over the
+latent frames, which does not line up with H3's frame groups.)
+
+- `mask_region` **crop** (default, as before): the whole crop is resampled, at the
+  per-frame strength.
+- `mask_region` **face**: only the tracked face is. Its mask is the one the crop
+  node stored for each frame (the SAM 3 track, cut to that frame's crop box),
+  resized to the clip, grown by `mask_grow` pixels of the upscaled clip (default
+  32, so hair and jawline are resampled with the face; negative shrinks), and
+  feathered over `mask_feather` pixels (default 16). H3 takes a soft mask value
+  as a lower strength there, so the edge of the resampled area blends in. The
+  rest of the crop keeps its latent exactly, so the background, hands or a
+  second face next to it are not regenerated. A pad frame uses the last real
+  frame's mask.
+
+`mask_preview` shows the result at the clip's size; wire it to a mask preview to
+check it. With **face**, `FaceTrackPasteBack`'s `blend_mode` **mask** writes back
+only the face as well; **rectangle** writes the whole crop, which is then the
+original outside the face (through the VAE and the resize).
 
 ### Face Track Audio Slice — `FaceTrackAudioSlice`
 Reindexes the source audio to the **gated** face clip so H3 lip-sync matches the
@@ -568,11 +645,14 @@ pytest
 ```
 
 Plain `pytest` from the repo root is enough — `pyproject.toml` sets `testpaths` and the
-import mode. 39 tests, no GPU and no ComfyUI needed: they import `nodes.py` directly and
+import mode. 69 tests, no GPU and no ComfyUI needed: they import `nodes.py` directly and
 drive it with small synthetic mask tracks, covering the size gate over a zoom, the
 hysteresis dead-band, crop-window sizing (including the tall-face regression), the
 `upscale_ratio` vs fixed `target_size` modes, the clip-length grids, paste-back in both
-blend modes, the no-op paths, and the audio slice.
+blend modes, the no-op paths, the audio slice, whole-clip crop planning (holding
+still, following a moving face, easing ahead, dropouts, cuts, planned size and its zoom cap), and H3FaceRefine's noise mask (H3's
+latent frame groups, the max reduction, the face region, and a whole run with
+stand-ins for ComfyUI's tensors and the VAE).
 
 Two things about the setup that are not obvious:
 
@@ -615,3 +695,14 @@ tracked-face pipeline — techniques worked out by the community:
 
 Those upstream packs are MIT-licensed; the adapted code is redistributed here
 under this repository's AGPL-3.0, with attribution.
+
+**Whole-clip crop planning** (`crop_planning = whole_clip`) follows the idea of
+MaskVidExperiments' *Subject Crop* (its *tracked* mode: a constant-size crop that
+stays still until the subject would leave it, then moves as little as possible),
+with a simpler planner of its own; no code is copied.
+
+The **face-region mask** reduces a pixel mask onto H3's latent grid the way
+[**MaskVidExperiments**](https://github.com/drozbay/MaskVidExperiments) by drozbay
+(GPL-3.0) does in its *Mask To Latent Space* node: the max over each latent
+cell's pixels and over each latent frame's VAE frame group. It is written anew
+here for the tracked face crop; no code is copied.

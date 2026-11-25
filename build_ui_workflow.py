@@ -203,7 +203,8 @@ SPEC = {
         "inputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("images", "IMAGE"),
                    ("vae", "VAE"), ("track_data", "FACE_TRACK_DATA"),
                    ("audio_vae", "VAE"), ("audio", "AUDIO")],
-        "outputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("report", "STRING")],
+        "outputs": [("model", "MODEL"), ("av_latent", "LATENT"), ("report", "STRING"),
+                    ("mask_preview", "MASK")],
     },
     "FaceTrackAudioSlice": {
         # widget order: source_fps, target_fps. source_fps converted to input
@@ -265,7 +266,7 @@ NODES_TRACK = {
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     # mask_track wired straight from SAM3_TrackToMask (no GetMaskSizeAndCount needed —
     # the gate's `report` output already surfaces frame/size counts).
-    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -472,7 +473,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -576,7 +577,7 @@ NODES_H3 = {
     # straight from SAM3_TrackToMask (no GetMaskSizeAndCount; the gate's `report`
     # output already surfaces frame/size counts).
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768],
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
@@ -608,7 +609,7 @@ NODES_H3 = {
            {"audio": ("1", 2), "track_data": ("7", 1), "source_fps": ("22", 0)}),
     # One node: img2img inject (face clip) + lip-sync (original audio) + per-frame
     # denoise. Outputs the patched model and the prepared AV latent.
-    "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9],
+    "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "crop", 32, 16],
            {"model": ("56", 0), "av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0),
             "track_data": ("7", 1), "audio_vae": ("44", 0), "audio": ("57", 0)}),
     # Flow-shift schedule, patched straight after the Lora loader. The VIDEO shift
@@ -702,7 +703,7 @@ NODES_H3_PERRUN = {
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768],
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ── H3 models, loaded once and shared by every branch ──
     "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
@@ -741,7 +742,7 @@ def _h3_branch(base, run_index, prev_paste_ref):
               {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
                "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": (aud, 0),
                "width": (rsz, 1), "height": (rsz, 2), "length": (sel, 4)}),
-        refine: ("H3FaceRefine", [1.0, 0.35, 1.0, 9],
+        refine: ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "crop", 32, 16],
                  {"model": ("56", 0), "av_latent": (ref, 1), "images": (rsz, 0),
                   "vae": ("43", 0), "track_data": (sel, 1), "audio_vae": ("44", 0),
                   "audio": (aud, 0)}),

@@ -67,7 +67,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         0,
-        674
+        760
       ],
       "size": [
         320,
@@ -113,7 +113,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         400,
-        674
+        760
       ],
       "size": [
         320,
@@ -335,7 +335,7 @@
       ],
       "size": [
         321,
-        558
+        670
       ],
       "flags": {},
       "order": 6,
@@ -423,7 +423,13 @@
         0.0,
         "ltx",
         true,
-        768
+        768,
+        "whole_clip",
+        0.5,
+        12,
+        9,
+        "follow",
+        1.02
       ]
     },
     {
@@ -431,7 +437,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         1601,
-        1390
+        1476
       ],
       "size": [
         321,
@@ -484,7 +490,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2002,
-        1390
+        1476
       ],
       "size": [
         321,
@@ -523,7 +529,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2002,
-        1680
+        1766
       ],
       "size": [
         321,
@@ -1023,7 +1029,7 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         2002,
-        674
+        760
       ],
       "size": [
         321,
@@ -1099,7 +1105,7 @@
       "type": "ImageResizeKJv2",
       "pos": [
         2403,
-        674
+        760
       ],
       "size": [
         321,
@@ -1178,7 +1184,7 @@
       "type": "LTXVImgToVideo",
       "pos": [
         2924,
-        674
+        760
       ],
       "size": [
         320,
@@ -1275,7 +1281,7 @@
       "type": "LTXVConditioning",
       "pos": [
         3324,
-        674
+        760
       ],
       "size": [
         320,
@@ -1334,7 +1340,7 @@
       "type": "KSampler",
       "pos": [
         3724,
-        674
+        760
       ],
       "size": [
         320,
@@ -1393,7 +1399,7 @@
       "type": "VAEDecode",
       "pos": [
         4124,
-        674
+        760
       ],
       "size": [
         320,
@@ -1434,7 +1440,7 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         4524,
-        674
+        760
       ],
       "size": [
         321,

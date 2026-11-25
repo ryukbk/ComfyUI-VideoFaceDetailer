@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 
-// Show only the size knob that is actually in use on Face Track Crop & Gate:
+// Show only the knobs that are actually in use on Face Track Crop & Gate. Size:
 //   fixed_target_size OFF -> upscale_ratio   (target_size follows the face)
 //   fixed_target_size ON  -> target_size     (one fixed edge length)
 //
@@ -16,6 +16,14 @@ import { app } from "../../scripts/app.js";
 const MODE = "fixed_target_size";
 const ON_WIDGET = "target_size";      // shown when the toggle is ON
 const OFF_WIDGET = "upscale_ratio";   // shown when the toggle is OFF
+
+// And only the crop-planning settings of the mode in use: follow reads the two
+// EMA alphas, whole_clip its plan_* settings.
+const PLANNING = "crop_planning";
+const FOLLOW_WIDGETS = ["smooth_alpha", "size_smooth_alpha"];
+const PLAN_WIDGETS = ["plan_hold", "plan_ease_frames", "plan_window", "plan_size"];
+const PLAN_SIZE = "plan_size";
+const ZOOM_WIDGET = "plan_max_zoom_rate";   // only with plan_size follow
 
 function findWidget(node, name) {
   return node.widgets?.find((w) => w.name === name);
@@ -55,6 +63,14 @@ function applyVisibility(node) {
     hide(onW);
     show(offW);
   }
+  const planning = findWidget(node, PLANNING);
+  if (planning) {
+    const whole = planning.value === "whole_clip";
+    for (const name of FOLLOW_WIDGETS) (whole ? hide : show)(findWidget(node, name));
+    for (const name of PLAN_WIDGETS) (whole ? show : hide)(findWidget(node, name));
+    const sizeFollows = whole && findWidget(node, PLAN_SIZE)?.value === "follow";
+    (sizeFollows ? show : hide)(findWidget(node, ZOOM_WIDGET));
+  }
   // Re-fit to the new widget set; never shrink the width the user chose.
   const sz = node.computeSize();
   node.setSize([Math.max(node.size[0], sz[0]), sz[1]]);
@@ -68,12 +84,15 @@ app.registerExtension({
     if (node.comfyClass !== "FaceTrackCropAndGate") return;
     const mode = findWidget(node, MODE);
     if (!mode) return;
-    const prev = mode.callback;
-    mode.callback = function (...args) {
-      const r = prev?.apply(this, args);
-      applyVisibility(node);
-      return r;
-    };
+    for (const toggle of [mode, findWidget(node, PLANNING), findWidget(node, PLAN_SIZE)]) {
+      if (!toggle) continue;
+      const prev = toggle.callback;
+      toggle.callback = function (...args) {
+        const r = prev?.apply(this, args);
+        applyVisibility(node);
+        return r;
+      };
+    }
     // Deserialising a saved workflow assigns widget values WITHOUT calling their
     // callbacks, so the initial state has to be applied separately - and deferred,
     // because nodeCreated runs before the widget values have been restored.

@@ -386,7 +386,7 @@
       ],
       "size": [
         320,
-        558
+        670
       ],
       "flags": {},
       "order": 7,
@@ -476,7 +476,13 @@
         0.0,
         "minimax_h3",
         true,
-        768
+        768,
+        "whole_clip",
+        0.5,
+        12,
+        9,
+        "follow",
+        1.02
       ]
     },
     {
@@ -484,7 +490,7 @@
       "type": "UNETLoader",
       "pos": [
         400,
-        648
+        760
       ],
       "size": [
         320,
@@ -517,7 +523,7 @@
       "type": "LoraLoaderModelOnly",
       "pos": [
         800,
-        648
+        760
       ],
       "size": [
         320,
@@ -556,7 +562,7 @@
       "type": "MiniMaxH3SigmaShift",
       "pos": [
         1200,
-        648
+        760
       ],
       "size": [
         320,
@@ -595,7 +601,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         1600,
-        648
+        760
       ],
       "size": [
         320,
@@ -634,7 +640,7 @@
       "type": "CLIPLoader",
       "pos": [
         2000,
-        648
+        760
       ],
       "size": [
         320,
@@ -668,7 +674,7 @@
       "type": "VAELoader",
       "pos": [
         2400,
-        648
+        760
       ],
       "size": [
         320,
@@ -705,7 +711,7 @@
       "type": "VAELoader",
       "pos": [
         2800,
-        648
+        760
       ],
       "size": [
         320,
@@ -740,7 +746,7 @@
       "type": "LoadImage",
       "pos": [
         0,
-        648
+        760
       ],
       "size": [
         320,
@@ -779,7 +785,7 @@
       "type": "KSamplerSelect",
       "pos": [
         3200,
-        648
+        760
       ],
       "size": [
         320,
@@ -812,7 +818,7 @@
       "type": "RandomNoise",
       "pos": [
         3600,
-        648
+        760
       ],
       "size": [
         321,
@@ -846,7 +852,7 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         0,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -922,7 +928,7 @@
       "type": "ImageResizeKJv2",
       "pos": [
         400,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1005,7 +1011,7 @@
       "type": "FaceTrackAudioSlice",
       "pos": [
         800,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1064,7 +1070,7 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         1200,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1158,11 +1164,11 @@
       "type": "H3FaceRefine",
       "pos": [
         1600,
-        1088
+        1200
       ],
       "size": [
         320,
-        354
+        458
       ],
       "flags": {},
       "order": 22,
@@ -1227,6 +1233,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 2
+        },
+        {
+          "name": "mask_preview",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 3
         }
       ],
       "properties": {
@@ -1236,7 +1248,10 @@
         1.0,
         0.35,
         1.0,
-        9
+        9,
+        "crop",
+        32,
+        16
       ]
     },
     {
@@ -1244,7 +1259,7 @@
       "type": "BasicGuider",
       "pos": [
         2000,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1285,7 +1300,7 @@
       "type": "BasicScheduler",
       "pos": [
         2400,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1325,7 +1340,7 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         2800,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1387,7 +1402,7 @@
       "type": "VAEDecode",
       "pos": [
         3200,
-        1088
+        1200
       ],
       "size": [
         320,
@@ -1428,7 +1443,7 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         3600,
-        1088
+        1200
       ],
       "size": [
         321,
@@ -1479,7 +1494,7 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         0,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1555,7 +1570,7 @@
       "type": "ImageResizeKJv2",
       "pos": [
         400,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1638,7 +1653,7 @@
       "type": "FaceTrackAudioSlice",
       "pos": [
         800,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1697,7 +1712,7 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         1200,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1791,11 +1806,11 @@
       "type": "H3FaceRefine",
       "pos": [
         1600,
-        1744
+        1868
       ],
       "size": [
         320,
-        354
+        458
       ],
       "flags": {},
       "order": 32,
@@ -1860,6 +1875,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 2
+        },
+        {
+          "name": "mask_preview",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 3
         }
       ],
       "properties": {
@@ -1869,7 +1890,10 @@
         1.0,
         0.35,
         1.0,
-        9
+        9,
+        "crop",
+        32,
+        16
       ]
     },
     {
@@ -1877,7 +1901,7 @@
       "type": "BasicGuider",
       "pos": [
         2000,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1918,7 +1942,7 @@
       "type": "BasicScheduler",
       "pos": [
         2400,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -1958,7 +1982,7 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         2800,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -2020,7 +2044,7 @@
       "type": "VAEDecode",
       "pos": [
         3200,
-        1744
+        1868
       ],
       "size": [
         320,
@@ -2061,7 +2085,7 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         3600,
-        1744
+        1868
       ],
       "size": [
         321,
@@ -2112,7 +2136,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         0,
-        2400
+        2536
       ],
       "size": [
         320,
@@ -2163,7 +2187,7 @@
       "type": "VHS_VideoCombine",
       "pos": [
         400,
-        2400
+        2536
       ],
       "size": [
         320,

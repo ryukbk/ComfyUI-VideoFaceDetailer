@@ -101,7 +101,7 @@ def test_resampler_defaults_to_h3_and_ltx_is_honoured():
 
 def test_enhanced_flag_and_report():
     imgs, mask = small_face_clip()
-    _c, _d, _t, n_real, _r, _fc, enhanced, report = crop(imgs, mask, resampler="minimax_h3")
+    _c, _d, _t, n_real, _r, _fc, enhanced, report, _preview = crop(imgs, mask, resampler="minimax_h3")
     assert enhanced is True and n_real > 0
     # The report is how the user picks thresholds, so it has to quote all three units.
     assert all(k in report for k in ("width", "height", "area"))
@@ -112,7 +112,7 @@ def test_enhanced_flag_and_report():
 
 def test_a_face_above_the_gate_throughout_is_a_no_op():
     imgs, _ = small_face_clip()
-    clip, data, target_size, n_real, n_runs, frame_count, enhanced, _rep = crop(
+    clip, data, target_size, n_real, n_runs, frame_count, enhanced, _rep, _preview = crop(
         imgs, large_face_clip(imgs), hysteresis_percent=0.0, resampler="minimax_h3")
 
     assert n_real == 0 and n_runs == 0
@@ -126,7 +126,7 @@ def test_a_face_above_the_gate_throughout_is_a_no_op():
 def test_an_empty_enable_window_is_a_no_op_not_a_crash():
     # min_threshold == max_threshold: the reported bug config.
     imgs, mask = small_face_clip()
-    _c, _d, _t, n_real, _r, _fc, enhanced, _rep = crop(
+    _c, _d, _t, n_real, _r, _fc, enhanced, _rep, _preview = crop(
         imgs, mask, hysteresis_percent=0.0, min_threshold_percent=10.0,
         resampler="minimax_h3")
     assert n_real == 0 and enhanced is False

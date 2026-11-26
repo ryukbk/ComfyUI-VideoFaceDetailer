@@ -69,7 +69,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         0,
-        760
+        892
       ],
       "size": [
         320,
@@ -115,7 +115,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         400,
-        760
+        892
       ],
       "size": [
         320,
@@ -334,7 +334,7 @@
       "type": "SAM3_TrackPreview",
       "pos": [
         1200,
-        1171
+        1303
       ],
       "size": [
         320,
@@ -381,7 +381,7 @@
       ],
       "size": [
         320,
-        670
+        802
       ],
       "flags": {},
       "order": 7,
@@ -459,6 +459,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 7
+        },
+        {
+          "name": "preview_track",
+          "type": "SAM3_TRACK_DATA",
+          "links": [],
+          "slot_index": 8
         }
       ],
       "properties": {
@@ -482,7 +488,11 @@
         12,
         9,
         "follow",
-        1.02
+        1.02,
+        6,
+        1.0,
+        "interpolate",
+        12
       ]
     },
     {
@@ -569,7 +579,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         1600,
-        1171
+        1303
       ],
       "size": [
         320,
@@ -619,7 +629,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2000,
-        1171
+        1303
       ],
       "size": [
         320,
@@ -657,7 +667,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2000,
-        1461
+        1593
       ],
       "size": [
         320,
@@ -992,7 +1002,7 @@
       },
       "widgets_values": [
         0.15,
-        "rectangle",
+        "mask",
         true
       ]
     },
@@ -1001,7 +1011,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         4400,
-        760
+        892
       ],
       "size": [
         320,

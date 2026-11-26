@@ -384,7 +384,7 @@
       ],
       "size": [
         320,
-        670
+        802
       ],
       "flags": {},
       "order": 7,
@@ -462,6 +462,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 7
+        },
+        {
+          "name": "preview_track",
+          "type": "SAM3_TRACK_DATA",
+          "links": [],
+          "slot_index": 8
         }
       ],
       "properties": {
@@ -485,7 +491,11 @@
         12,
         9,
         "follow",
-        1.02
+        1.02,
+        6,
+        1.0,
+        "interpolate",
+        12
       ]
     },
     {
@@ -786,7 +796,7 @@
       "type": "MiniMaxH3ReferenceToVideo",
       "pos": [
         0,
-        1846
+        1978
       ],
       "size": [
         320,
@@ -868,7 +878,7 @@
         "Node name for S&R": "MiniMaxH3ReferenceToVideo"
       },
       "widgets_values": [
-        "subject_definitions:\n<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) \u2014 the spoken vocal track the mouth must follow.\n\nsummary:\n[reference generation + audio reference] The target video is a sharp, detailed close-up 8K footage of <Subject 1> speaking naturally, keeping the exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.\n<Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.\n\ndetailed_description:\nThe target video is a high-quality, sharp, naturally-lit close-up in a realistic photographic style.\n[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in soft natural light, preserving the exact identity, facial features and skin texture from <Picture 1>. Speaking naturally and lip-syncing precisely to <Audio 1>, the lips, mouth and jaw move in time with the speech while the identity stays consistent.\n\noverall_soundscape: <Audio 1> is directly reused.\n\nnon_diegetic_music: N/A",
+        "subject_definitions:\n<Subject 1> is the face of the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) \u2014 the spoken vocal track the mouth must follow.\n\nsummary:\n[reference generation + audio reference] The target video is a sharp, detailed close-up 8K footage of <Subject 1> speaking naturally, keeping the exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.\n<Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.\n\ndetailed_description:\nThe target video is a high-quality, sharp, naturally-lit close-up in a realistic photographic style.\n[Shot 1] <Subject 1> (S1) from <Picture 1> is shown, preserving the exact identity, facial features and skin texture from <Picture 1>. <Subject 1> is speaking naturally and lip-syncing precisely to <Audio 1>, the lips, mouth and jaw move in time with the speech while the identity stays consistent.\n\noverall_soundscape: <Audio 1> is directly reused.\nnon_diegetic_music: N/A",
         1344,
         768,
         124,
@@ -939,7 +949,7 @@
       "type": "H3FaceRefine",
       "pos": [
         800,
-        1846
+        1978
       ],
       "size": [
         321,
@@ -1024,7 +1034,7 @@
         0.35,
         1.0,
         9,
-        "crop",
+        "face",
         32,
         16
       ]
@@ -1111,7 +1121,7 @@
       "type": "BasicGuider",
       "pos": [
         1201,
-        1846
+        1978
       ],
       "size": [
         321,
@@ -1152,7 +1162,7 @@
       "type": "BasicScheduler",
       "pos": [
         1602,
-        1846
+        1978
       ],
       "size": [
         321,
@@ -1192,7 +1202,7 @@
       "type": "KSamplerSelect",
       "pos": [
         2003,
-        1846
+        1978
       ],
       "size": [
         321,
@@ -1224,7 +1234,7 @@
       "type": "RandomNoise",
       "pos": [
         2404,
-        1846
+        1978
       ],
       "size": [
         321,
@@ -1257,7 +1267,7 @@
       "type": "SamplerCustomAdvanced",
       "pos": [
         800,
-        2394
+        2526
       ],
       "size": [
         321,
@@ -1319,7 +1329,7 @@
       "type": "VAEDecode",
       "pos": [
         800,
-        2684
+        2816
       ],
       "size": [
         321,
@@ -1360,7 +1370,7 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         0,
-        2684
+        2816
       ],
       "size": [
         320,
@@ -1401,7 +1411,7 @@
       },
       "widgets_values": [
         0.15,
-        "rectangle",
+        "mask",
         true,
         1.0
       ]
@@ -1411,7 +1421,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         400,
-        2684
+        2816
       ],
       "size": [
         320,
@@ -1958,7 +1968,7 @@
         -30,
         694,
         2785,
-        2254
+        2386
       ],
       "color": "#3f789e",
       "font_size": 24,

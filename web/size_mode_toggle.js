@@ -21,7 +21,7 @@ const OFF_WIDGET = "upscale_ratio";   // shown when the toggle is OFF
 // EMA alphas, whole_clip its plan_* settings.
 const PLANNING = "crop_planning";
 const FOLLOW_WIDGETS = ["smooth_alpha", "size_smooth_alpha"];
-const PLAN_WIDGETS = ["plan_hold", "plan_ease_frames", "plan_window", "plan_size"];
+const PLAN_WIDGETS = ["plan_hold", "plan_ease_frames", "plan_window", "plan_size", "plan_return_frames"];
 const PLAN_SIZE = "plan_size";
 const ZOOM_WIDGET = "plan_max_zoom_rate";   // only with plan_size follow
 

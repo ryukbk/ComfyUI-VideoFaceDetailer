@@ -46,7 +46,7 @@ VHS_LoadVideo ── images ──┐             │                           
    SAM3_VideoTrack → SAM3_TrackToMask → (mask track of ONE face)                             │
                           │                                                                  │
                           ▼                                                                  │
-   Face Track Crop & Gate (coherent)                                                         │
+   Face Track Crop & Gate                                                                    │
      • keeps only frames where the face < max_threshold_percent (of width/height/area)                 │
      • crops each kept frame, smoothed in position AND size (no wobble)                      │
      • outputs face_clip + target_size (= crop size × upscale_ratio) + num_runs              │
@@ -59,7 +59,7 @@ VHS_LoadVideo ── images ──┐             │                           
                                                     ▼                                         │
                                                 VAEDecode                                     │
                                                     │                                         │
-   Face Track Paste Back (coherent) ◄───────────────┘                                         │
+   Face Track Paste Back ◄──────────────────────────┘                                         │
      • downsamples each processed face back to its original crop size  ── DOWNSAMPLE         │
      • composites it onto the original frame at the original position (feathered)            │
                           │                                                                  │
@@ -129,7 +129,7 @@ video's **own audio** automatically — no separate track needed (swap in an
 isolated-vocals source on the audio-lock input if you want a cleaner signal).
 
 The tracked workflows ship with Face Track Crop & Gate's `crop_planning` on
-**whole_clip** (with `plan_size` follow); the node's own default stays **follow**,
+**whole_clip** (with `plan_size` follow) and `glitch_frames` 6 with `glitch_fill` interpolate; the node's own default stays **follow**,
 so workflows saved before it existed keep working as they did.
 
 The workflows are laid out so that no node overlaps another on either renderer,
@@ -143,7 +143,7 @@ Playwright and Google Chrome), and rebuild again.
 
 ## Nodes
 
-### Face Track Crop & Gate (coherent) — `FaceTrackCropAndGate`
+### Face Track Crop & Gate — `FaceTrackCropAndGate`
 Crops one tracked face across the video, gated by size, ready for upscaling.
 
 **Inputs**
@@ -170,6 +170,10 @@ Crops one tracked face across the video, gated by size, ready for upscaling.
 | `plan_window` | INT | 9 | whole_clip: frames of the median the face box is read through; a mask that shrinks, grows or drops out for fewer than half this many frames does not move the crop. |
 | `plan_size` | choice | **follow** | whole_clip: **follow** plans the size like the position, for a face that comes closer or moves away; **fixed** keeps one crop size per shot (the zoom never changes in it). |
 | `plan_max_zoom_rate` | FLOAT | 1.02 | whole_clip with `plan_size` follow: the most the crop size may change from one frame to the next, as a ratio (1.02 = 2% a frame, about 1.6× a second at 24 fps; 1 = no cap). Shown only then. |
+| `glitch_frames` | INT | 0 (examples: **6**) | ignore a **stray mask**: when the tracked mask jumps away (to another person, a hand) and comes back to where it was within this many frames, those frames get the face where it would be — the nearer good frame's mask, moved along the line between the frames either side — for the gate, the crop, `H3FaceRefine` and paste-back. A jump that does not come back (a cut, or the face really moving) is kept. Works in both `crop_planning` modes. 0 = off. |
+| `glitch_distance` | FLOAT | 1.0 | how far, in face sizes, the mask must jump (or how much it must change size: twice or half) to count as away, and how close it must come back to count as returned. |
+| `glitch_fill` | choice | move_nearest (examples: **interpolate**) | what a stray span's frames get. **move_nearest**: the nearer good frame's mask, moved along the straight line between the good frames either side. **interpolate**: both good frames' masks blended from one to the other in shape, at a size changing evenly between theirs, on a path that keeps the face's speed at both ends, so there is no kink or pop where the span starts and ends. |
+| `plan_return_frames` | INT | 12 | whole_clip: a jump of the face that comes back to where it was within this many frames is not a cut — the crop holds its course through it, on the line between the frames either side; only a jump that stays starts a new shot. 0 = every jump is a cut. |
 
 **Outputs:** `face_clip` (IMAGE), `track_data` (FACE_TRACK_DATA), `target_size`
 (INT), `enhanced_frames` (INT), `num_runs` (INT), `frame_count` (INT — the
@@ -179,7 +183,16 @@ instead of a separate `GetImageSizeAndCount` node), `enhanced` (BOOLEAN — True
 ≥1 frame qualified; wire into the **If/Else Switch**'s `switch` so the enhance branch is
 skipped when nothing qualifies. This is the recommended gate — it supersedes
 `MaskHasFace`, since "no face" is just one way to get 0 qualifying frames),
-`report` (STRING).
+`report` (STRING), `preview_track` (SAM3_TRACK_DATA — see below).
+
+**Previewing the crop:** wire `preview_track` into a **SAM3 Track Preview**'s
+`track_data` and the source video into its `images`. It draws, per source frame:
+object **0** the face mask the node used (after any stray-mask repair), **1** the
+crop box's outline on enhanced frames, and **2** the original mask on the frames
+the stray-mask filter replaced, each in its own colour. So you can see where the
+crop went, what was taken as the face, and what was thrown away as a stray.
+Checked in ComfyUI: a 30-frame clip with a 3-frame stray previewed with the face
+and its crop box steady and the stray shown only on those 3 frames.
 
 **Picking thresholds from your footage:** run the workflow once and read the
 `report` output (also printed to the console). It shows, over the frames that
@@ -238,8 +251,22 @@ frames) from all its frames at once:
   the face gets there and settles after;
 - **blind to dropouts**: the face box is read through the median, so a mask
   that loses half the face for a few frames does not move it;
-- **cuts**: a jump of the face's centre by more than half the crop side starts a
-  new shot, planned on its own with one clean jump.
+- **cuts**: a jump of the face's centre by more than half the crop side that
+  *stays* starts a new shot, planned on its own with one clean jump. A jump that
+  comes back to where it was within `plan_return_frames` (12) is not a cut: the
+  crop holds its course through it, as if the face had stayed on the line
+  between the frames either side, and the plan reports it (`held through frames
+  40-47 (the face jumped and came back)`). This catches what the median and the
+  stray-mask filter miss: a jump longer than half of `plan_window`, or smaller
+  than `glitch_distance`.
+
+A mask that jumps far away for a few frames and comes back is not a cut: with
+`glitch_frames` set (6 in the example workflows), those frames are given the
+face where it would be (`glitch_fill`: the nearer good frame's mask moved, or,
+as the examples ship, both good frames' masks interpolated in place, size and
+shape) before anything else reads them, so the crop, the
+gate, H3 Face Refine's face mask and paste-back's mask all ignore it. The
+report names the frames it replaced (`stray mask ignored on frames 40-43`).
 
 The report and the console list each shot's crop size, on how many steps it
 held still, and how far it moved. Paste-back is unchanged: it uses each frame's
@@ -248,13 +275,13 @@ planned box. The idea follows the *tracked* mode of drozbay's
 (and, with `plan_size` follow, its *zoomed* mode), with a simpler planner of its
 own; it stays square, like follow mode.
 
-### Face Track Paste Back (coherent) — `FaceTrackPasteBack`
+### Face Track Paste Back — `FaceTrackPasteBack`
 Downsamples each processed face back to its original crop size and composites it
 onto the original frame at the original location.
 
 **Inputs:** `original_images` (IMAGE), `processed_clip` (IMAGE, the resampled
 faces, **same count/order** as the crop output), `track_data` (FACE_TRACK_DATA),
-`feather` (FLOAT, 0.15), `blend_mode` (choice, **rectangle**), `only_present_frames`
+`feather` (FLOAT, 0.15), `blend_mode` (choice, **mask**), `only_present_frames`
 (BOOLEAN, True), `colour_match` (FLOAT, 0.0). **Output:** `images` (IMAGE).
 
 `colour_match` (0 = off, back-compat default) matches the refined face's
@@ -263,22 +290,24 @@ independent resample pass doesn't paste back a subtly brighter/shifted face —
 the main lever for a clean **edge/seam match** (recommended `~1.0` for the
 generative MiniMax H3 path). See [edges & denoise](#edges-seams-and-denoise).
 
-`blend_mode = rectangle` (default) writes the **whole crop window** with a linear
-edge ramp, so everything the resampler changed is kept — hair, jawline, and the
-pixels just outside the mask — at the cost of a soft rectangular boundary; pair it
-with `colour_match` to keep that boundary from reading as a seam. `mask` composites
-using the **face-shaped segmentation alpha** (from the tracked mask),
-Gaussian-feathered, so only face pixels are written and the surrounding background
-is untouched (no rectangular seam, and any tone/scale drift in the crop margin is
-not pasted) — but anything the mask excludes is discarded. `mask` also falls back to
-the rectangular blend on entries that carry no stored mask.
+`blend_mode = mask` (default) composites using the **face-shaped segmentation alpha**
+(from the tracked mask), Gaussian-feathered, so only face pixels are written and the
+surrounding background is untouched — no rectangular seam, any tone/scale drift in
+the crop margin is not pasted, and a second person next to the face is left as it
+was. It pairs with `H3FaceRefine`'s `mask_region` **face** (also the default), which
+resamples only the face in the first place. `mask` falls back to the rectangular
+blend on entries that carry no stored mask. `rectangle` writes the **whole crop
+window** with a linear edge ramp, so everything the resampler changed is kept —
+hair, jawline, and the pixels just outside the mask — at the cost of a soft
+rectangular boundary; pair it with `colour_match` to keep that boundary from
+reading as a seam.
 
-> **Why `rectangle` is the default.** That alpha is cut from the mask track of the
-> **original** frames (`cmask`, taken at crop time), so it describes the face *before*
-> refinement. Stronger denoise moves the face shape, and the new jawline/hairline then
-> falls outside the old silhouette and is clipped — the tighter the mask, the more
-> visibly it breaks. Prefer `mask` at **low** denoise, where the shape barely moves and
-> a tight alpha keeps the background pristine; prefer `rectangle` as denoise rises.
+> **Mind the edge with `mask` at high denoise.** The alpha is cut from the mask track
+> of the **original** frames (`cmask`, taken at crop time), so it describes the face
+> *before* refinement. Stronger denoise moves the face shape, and a new jawline or
+> hairline that falls outside the old silhouette is clipped — the tighter the mask,
+> the more visibly. Raise `feather`, lower denoise, or switch to `rectangle` (with
+> `mask_region` crop) if you see it.
 
 Downsampling uses area interpolation (alias-free);
 upscaling uses bicubic. It **errors loudly** if `processed_clip` count ≠ the
@@ -358,9 +387,8 @@ resampled if any pixel or frame it covers is, at the strongest strength among
 them. (Before this, the per-frame strength was stretched linearly over the
 latent frames, which does not line up with H3's frame groups.)
 
-- `mask_region` **crop** (default, as before): the whole crop is resampled, at the
-  per-frame strength.
-- `mask_region` **face**: only the tracked face is. Its mask is the one the crop
+- `mask_region` **crop**: the whole crop is resampled, at the per-frame strength.
+- `mask_region` **face** (default): only the tracked face is. Its mask is the one the crop
   node stored for each frame (the SAM 3 track, cut to that frame's crop box),
   resized to the clip, grown by `mask_grow` pixels of the upscaled clip (default
   32, so hair and jawline are resampled with the face; negative shrinks), and
@@ -483,11 +511,10 @@ than refines.
 >
 > ```
 > subject_definitions:
-> <Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) …
+> <Subject 1> is the face of the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) …
 > …
 > retention_analysis:
 > <Subject 1> …: fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.
-> <Picture 1> …: fully_preserved …
 > <Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.
 > …
 > ```
@@ -540,10 +567,10 @@ If the pasted face doesn't match the surrounding video at the edges:
   where seams are most visible — by dropping denoise as face size grows.
 - **`feather`** / **`padding`** put the seam in hair/background; SAM-style masks
   trace tightly, so lower `feather` if you use them.
-- **`blend_mode` interacts with denoise.** The face-shaped alpha is the *original*
-  silhouette, so at high denoise the reshaped face no longer fits inside it and the
-  edge breaks. That is why `rectangle` is the default; switch to `mask` only when
-  denoise is low enough that the face shape stays put.
+- **`blend_mode` interacts with denoise.** The face-shaped alpha (`mask`, the
+  default) is the *original* silhouette, so at high denoise the reshaped face can
+  stop fitting inside it and the edge breaks. Raise `feather` or lower denoise, or
+  use `rectangle` with `mask_region` crop, if it does.
 
 ---
 
@@ -645,12 +672,12 @@ pytest
 ```
 
 Plain `pytest` from the repo root is enough — `pyproject.toml` sets `testpaths` and the
-import mode. 69 tests, no GPU and no ComfyUI needed: they import `nodes.py` directly and
+import mode. 80 tests, no GPU and no ComfyUI needed: they import `nodes.py` directly and
 drive it with small synthetic mask tracks, covering the size gate over a zoom, the
 hysteresis dead-band, crop-window sizing (including the tall-face regression), the
 `upscale_ratio` vs fixed `target_size` modes, the clip-length grids, paste-back in both
 blend modes, the no-op paths, the audio slice, whole-clip crop planning (holding
-still, following a moving face, easing ahead, dropouts, cuts, planned size and its zoom cap), and H3FaceRefine's noise mask (H3's
+still, following a moving face, easing ahead, dropouts, cuts, planned size and its zoom cap, stray mask spans, jumps that come back, the SAM3 preview track), and H3FaceRefine's noise mask (H3's
 latent frame groups, the max reduction, the face region, and a whole run with
 stand-ins for ComfyUI's tensors and the VAE).
 

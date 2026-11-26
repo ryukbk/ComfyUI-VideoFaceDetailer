@@ -143,7 +143,7 @@ def test_a_face_large_for_the_whole_clip_is_a_no_op_not_an_error():
     big = torch.zeros(4, H, W)
     big[:, 50:130, 100:200] = 1.0       # 100px, well over the 40px gate
 
-    clip, data, target_size, n_real, n_runs, frame_count, enhanced, _report = \
+    clip, data, target_size, n_real, n_runs, frame_count, enhanced, _report, _preview = \
         crop_on_width(imgs, big, 2.0, 10.0, 0.0, 0.3, 0.4)
 
     assert n_real == 0 and n_runs == 0
@@ -190,7 +190,7 @@ def gate_line(capsys):
 def test_gate_reports_why_each_frame_was_dropped(capsys):
     # 2 tiny, 3 inside the window, 2 huge, 1 with no face at all.
     imgs, mask = face_track([8, 10, 40, 44, 48, 200, 180, None])
-    _clip, _data, _tgt, n_real, _runs, _fc, _enh, report = crop_on_width(
+    _clip, _data, _tgt, n_real, _runs, _fc, _enh, report, _preview = crop_on_width(
         imgs, mask, 2.0, 15.0, 0.0, 1.5, 1.0, min_percent=5.0)
 
     line = gate_line(capsys)

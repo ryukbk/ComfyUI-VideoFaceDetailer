@@ -67,7 +67,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         0,
-        760
+        892
       ],
       "size": [
         320,
@@ -113,7 +113,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         400,
-        760
+        892
       ],
       "size": [
         320,
@@ -335,7 +335,7 @@
       ],
       "size": [
         321,
-        670
+        802
       ],
       "flags": {},
       "order": 6,
@@ -406,6 +406,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 7
+        },
+        {
+          "name": "preview_track",
+          "type": "SAM3_TRACK_DATA",
+          "links": [],
+          "slot_index": 8
         }
       ],
       "properties": {
@@ -429,7 +435,11 @@
         12,
         9,
         "follow",
-        1.02
+        1.02,
+        6,
+        1.0,
+        "interpolate",
+        12
       ]
     },
     {
@@ -437,7 +447,7 @@
       "type": "CheckpointLoaderSimple",
       "pos": [
         1601,
-        1476
+        1608
       ],
       "size": [
         321,
@@ -490,7 +500,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2002,
-        1476
+        1608
       ],
       "size": [
         321,
@@ -529,7 +539,7 @@
       "type": "CLIPTextEncode",
       "pos": [
         2002,
-        1766
+        1898
       ],
       "size": [
         321,
@@ -1020,7 +1030,7 @@
       },
       "widgets_values": [
         0.15,
-        "rectangle",
+        "mask",
         true
       ]
     },
@@ -1029,7 +1039,7 @@
       "type": "FaceTrackSelectRun",
       "pos": [
         2002,
-        760
+        892
       ],
       "size": [
         321,
@@ -1105,7 +1115,7 @@
       "type": "ImageResizeKJv2",
       "pos": [
         2403,
-        760
+        892
       ],
       "size": [
         321,
@@ -1184,7 +1194,7 @@
       "type": "LTXVImgToVideo",
       "pos": [
         2924,
-        760
+        892
       ],
       "size": [
         320,
@@ -1281,7 +1291,7 @@
       "type": "LTXVConditioning",
       "pos": [
         3324,
-        760
+        892
       ],
       "size": [
         320,
@@ -1340,7 +1350,7 @@
       "type": "KSampler",
       "pos": [
         3724,
-        760
+        892
       ],
       "size": [
         320,
@@ -1399,7 +1409,7 @@
       "type": "VAEDecode",
       "pos": [
         4124,
-        760
+        892
       ],
       "size": [
         320,
@@ -1440,7 +1450,7 @@
       "type": "FaceTrackPasteBack",
       "pos": [
         4524,
-        760
+        892
       ],
       "size": [
         321,
@@ -1481,7 +1491,7 @@
       },
       "widgets_values": [
         0.15,
-        "rectangle",
+        "mask",
         true
       ]
     },

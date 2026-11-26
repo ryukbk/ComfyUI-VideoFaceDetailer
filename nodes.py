@@ -122,17 +122,32 @@ def _even_groups(n_frames, n_latents):
             for a, b in zip(edges[:-1], edges[1:])]
 
 
-def _grow_mask(mask_hw, px):
-    """Dilate (px > 0) or erode (px < 0) a [H,W] mask by |px| pixels (square)."""
+def _any_in_window(binary, r, dim):
+    """Whether any pixel within r of each pixel along `dim` is set: a running
+    sum, so the cost does not depend on r."""
+    c = F.pad(binary.cumsum(dim), (0, 0, 1, 0) if dim == -2 else (1, 0))
+    n = binary.shape[dim]
+    idx = torch.arange(n, device=binary.device)
+    hi = (idx + r + 1).clamp(max=n)
+    lo = (idx - r).clamp(min=0)
+    return (c.index_select(dim, hi) - c.index_select(dim, lo)) > 0
+
+
+def _grow_mask(mask, px):
+    """Dilate (px > 0) or erode (px < 0) a binary [H,W] or [N,H,W] mask by |px|
+    pixels (a square), as a row pass then a column pass of running sums: the
+    cost does not depend on px (a 65 x 65 max filter took ~13 s a frame of a
+    768 px clip on CPU). Pixels are set where > 0.5."""
     r = abs(int(px))
     if r == 0:
-        return mask_hw
-    x = mask_hw[None, None]
-    if px > 0:
-        x = F.max_pool2d(x, 2 * r + 1, stride=1, padding=r)
-    else:
-        x = -F.max_pool2d(-x, 2 * r + 1, stride=1, padding=r)
-    return x[0, 0]
+        return mask
+    b = mask > 0.5
+    if px < 0:
+        b = ~b
+    b = _any_in_window(_any_in_window(b.to(torch.int32), r, -1).to(torch.int32), r, -2)
+    if px < 0:
+        b = ~b
+    return b.to(mask.dtype)
 
 
 def face_region_masks(entries, height, width, grow_px=0, feather_px=0):
@@ -149,14 +164,18 @@ def face_region_masks(entries, height, width, grow_px=0, feather_px=0):
         masks.append(last)
     first = next((m for m in masks if m is not None), None)
     out = torch.empty(len(entries), height, width, dtype=torch.float32)
+    if first is None:
+        out.fill_(1.0)
+        return out
+    # Pad frames repeat a mask, so each distinct mask is built once.
+    built = {}
     for i, cm in enumerate(masks):
         cm = cm if cm is not None else first
-        if cm is None:
-            out[i] = 1.0
-            continue
-        m = F.interpolate(cm.to(torch.float32)[None, None], size=(height, width), mode="nearest")[0, 0]
-        m = _grow_mask(m, grow_px)
-        out[i] = _gaussian_blur_2d(m, feather_px)
+        key = id(cm)
+        if key not in built:
+            m = F.interpolate(cm.to(torch.float32)[None, None], size=(height, width), mode="nearest")[0, 0]
+            built[key] = _gaussian_blur_2d(_grow_mask(m, grow_px), feather_px)
+        out[i] = built[key]
     return out
 
 
@@ -549,6 +568,201 @@ def _frame_face_box(mask_bool):
     return (int(x0), int(y0), int(x1), int(y1), float(cx), float(cy))
 
 
+# ── stray mask spans ──────────────────────────────────────────────────────────
+# A tracker can lose the face for a few frames and mark something else - another
+# person, a hand - then come back. Unlike a scene cut, the mask returns to where
+# it was. Such a span is replaced by the face where it would be: the nearer good
+# frame's mask, moved along the straight line between the frames either side.
+
+def _near(box, ref, distance):
+    """Whether face box `box` is where `ref` is: its centre within `distance` x
+    ref's size, and neither more than twice the other's size."""
+    size = max(ref[2] - ref[0] + 1, ref[3] - ref[1] + 1)
+    other = max(box[2] - box[0] + 1, box[3] - box[1] + 1)
+    return (math.hypot(box[4] - ref[4], box[5] - ref[5]) <= distance * size
+            and max(size, other) <= 2.0 * min(size, other))
+
+
+def find_mask_glitches(boxes, max_frames=6, distance=1.0):
+    """[(start, end, before, after)]: spans of at most `max_frames` frames whose
+    face box is away from the good frame `before` (more than `distance` x its
+    size, or twice as large or small) while frame `after`, right after the
+    span, is back where `before` was. A move that does not come back within
+    max_frames - a cut, or the face really moving - is kept."""
+    spans = []
+    if max_frames <= 0:
+        return spans
+    last, i, n = None, 0, len(boxes)
+    while i < n:
+        box = boxes[i]
+        if box is None:
+            i += 1
+            continue
+        if last is None or _near(box, boxes[last], distance):
+            last, i = i, i + 1
+            continue
+        back = next((j for j in range(i + 1, min(n, i + max_frames + 1))
+                     if boxes[j] is not None and _near(boxes[j], boxes[last], distance)), None)
+        if back is None:
+            last, i = i, i + 1             # it stays away: a real move
+            continue
+        spans.append((i, back, last, back))
+        last, i = back, back + 1
+    return spans
+
+
+def _shifted(mask_hw, dx, dy):
+    """mask_hw moved by (dx, dy) pixels, zeros where it leaves the frame."""
+    out = torch.zeros_like(mask_hw)
+    h, w = mask_hw.shape
+    xs, xd = (0, dx) if dx >= 0 else (-dx, 0)
+    ys, yd = (0, dy) if dy >= 0 else (-dy, 0)
+    cw, ch = w - abs(dx), h - abs(dy)
+    if cw > 0 and ch > 0:
+        out[yd:yd + ch, xd:xd + cw] = mask_hw[ys:ys + ch, xs:xs + cw]
+    return out
+
+
+GLITCH_FILLS = ("move_nearest", "interpolate")
+
+
+def _placed(mask_hw, box, centre, side):
+    """The face of mask_hw (the region round `box`) scaled to face size `side`
+    and placed with its centre at `centre`, on an empty frame."""
+    h, w = mask_hw.shape
+    size = max(box[2] - box[0] + 1, box[3] - box[1] + 1)
+    half = int(math.ceil(size * 0.75))                      # the face and a margin round it
+    cx, cy = int(round(box[4])), int(round(box[5]))
+    region = torch.zeros(2 * half, 2 * half, dtype=mask_hw.dtype)
+    x0, y0 = cx - half, cy - half
+    sx0, sy0, sx1, sy1 = max(0, x0), max(0, y0), min(w, x0 + 2 * half), min(h, y0 + 2 * half)
+    if sx1 > sx0 and sy1 > sy0:
+        region[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = mask_hw[sy0:sy1, sx0:sx1]
+    out_half = max(1, int(round(half * side / float(size))))
+    region = F.interpolate(region[None, None].float(), size=(2 * out_half, 2 * out_half),
+                           mode="bilinear", align_corners=False)[0, 0].to(mask_hw.dtype)
+    out = torch.zeros_like(mask_hw)
+    px, py = int(round(centre[0])) - out_half, int(round(centre[1])) - out_half
+    dx0, dy0 = max(0, px), max(0, py)
+    dx1, dy1 = min(w, px + 2 * out_half), min(h, py + 2 * out_half)
+    if dx1 > dx0 and dy1 > dy0:
+        out[dy0:dy1, dx0:dx1] = region[dy0 - py:dy1 - py, dx0 - px:dx1 - px]
+    return out
+
+
+def _hermite(p0, p1, m0, m1, f):
+    """Cubic Hermite between p0 and p1 with end slopes m0, m1 (over the span)."""
+    f2, f3 = f * f, f * f * f
+    return ((2 * f3 - 3 * f2 + 1) * p0 + (f3 - 2 * f2 + f) * m0
+            + (-2 * f3 + 3 * f2) * p1 + (f3 - f2) * m1)
+
+
+def _interpolated_face(boxes, before, after, i, bad):
+    """Centre and size of the face on frame i between good frames before and
+    after: a path that keeps the face's speed at both ends (from the good
+    frames next to them), and a size changing evenly between the two."""
+    span = float(after - before)
+    f = (i - before) / span
+    def velocity(k, step):
+        j = k + step
+        if 0 <= j < len(boxes) and boxes[j] is not None and j not in bad:
+            return ((boxes[j][4] - boxes[k][4]) * step, (boxes[j][5] - boxes[k][5]) * step)
+        return None
+    v0, v1 = velocity(before, -1), velocity(after, 1)
+    linear = ((boxes[after][4] - boxes[before][4]) / span, (boxes[after][5] - boxes[before][5]) / span)
+    v0, v1 = v0 or linear, v1 or linear
+    centre = tuple(_hermite(boxes[before][4 + d], boxes[after][4 + d], v0[d] * span, v1[d] * span, f)
+                   for d in (0, 1))
+    size_of = lambda b: max(b[2] - b[0] + 1, b[3] - b[1] + 1)
+    side = size_of(boxes[before]) ** (1 - f) * size_of(boxes[after]) ** f
+    return centre, side, f
+
+
+def repair_mask_glitches(boxes, mask_track, spans, fill="move_nearest"):
+    """(boxes, mask_track) with each span's frames given the face where it would
+    be; mask_track is copied when anything changes, never written in place.
+
+    fill "move_nearest": the nearer good frame's mask, moved along the straight
+    line between the good frames either side. "interpolate": the two good
+    frames' masks, scaled to an evenly changing size, placed on a path that
+    keeps the face's speed at both ends, and blended from one to the other."""
+    if not spans:
+        return boxes, mask_track
+    boxes, masks = list(boxes), mask_track.clone()
+    original = list(boxes)
+    bad = {i for start, end, _b, _a in spans for i in range(start, end)}
+    for start, end, before, after in spans:
+        for i in range(start, end):
+            if boxes[i] is None:
+                continue
+            if fill == "interpolate":
+                centre, side, f = _interpolated_face(original, before, after, i, bad)
+                blended = ((1 - f) * _placed(mask_track[before], original[before], centre, side)
+                           + f * _placed(mask_track[after], original[after], centre, side))
+                masks[i] = blended
+                found = _frame_face_box((blended > 0.5).cpu().numpy())
+                if found is not None:
+                    boxes[i] = found
+                    continue
+                half = side / 2.0
+                boxes[i] = (int(round(centre[0] - half)), int(round(centre[1] - half)),
+                            int(round(centre[0] + half)) - 1, int(round(centre[1] + half)) - 1,
+                            float(centre[0]), float(centre[1]))
+                continue
+            f = (i - before) / float(after - before)
+            src = before if i - before <= after - i else after
+            cx = boxes[before][4] + f * (boxes[after][4] - boxes[before][4])
+            cy = boxes[before][5] + f * (boxes[after][5] - boxes[before][5])
+            dx, dy = int(round(cx - boxes[src][4])), int(round(cy - boxes[src][5]))
+            masks[i] = _shifted(mask_track[src], dx, dy)
+            b = boxes[src]
+            boxes[i] = (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy, b[4] + dx, b[5] + dy)
+    return boxes, masks
+
+
+# ── a preview for SAM3 Track Preview ──────────────────────────────────────────
+# SAM3_TRACK_DATA as ComfyUI's SAM3 nodes make it (comfy/ldm/sam3/tracker.py):
+# {"packed_masks": uint8 [frames, objects, H, W/8], bit k of byte j being pixel
+# 8j + k; "n_frames"; "scores" (1.0 draws no score); "orig_size": (H, W)}.
+
+PREVIEW_OBJECTS = ("face mask used", "crop box", "stray mask replaced")
+
+
+def _pack_bits(masks):
+    """Binary masks [..., H, W] (W a multiple of 8) bit-packed to [..., H, W/8]."""
+    binary = masks > 0.5
+    shifts = torch.arange(8, device=masks.device)
+    return (binary.view(*masks.shape[:-1], -1, 8).to(torch.int32) * (1 << shifts)).sum(-1).to(torch.uint8)
+
+
+def crop_preview_track(mask_used, mask_original, entries, replaced, n_frames, height, width, line=3):
+    """SAM3_TRACK_DATA for SAM3 Track Preview, per source frame: object 0 the
+    face mask the node used (after any stray-mask repair), 1 the crop box's
+    outline on enhanced frames, 2 the original mask on the frames the repair
+    replaced. Connect the source video to the preview's images."""
+    w8 = -(-width // 8) * 8
+    objects = torch.zeros(n_frames, 3, height, w8, dtype=torch.bool)
+    n = min(n_frames, mask_used.shape[0])
+    objects[:n, 0, :, :width] = mask_used[:n].cpu() > 0.5
+    for e in entries:
+        i, s = e.get("frame", -1), e.get("win", 0)
+        if not e.get("present") or not (0 <= i < n_frames) or s <= 0:
+            continue
+        x0, y0 = e["x0"], e["y0"]
+        x1, y1 = min(width, x0 + s), min(height, y0 + s)
+        t = max(1, min(line, s // 4))
+        box = objects[i, 1]
+        box[y0:y0 + t, x0:x1] = True
+        box[max(y0, y1 - t):y1, x0:x1] = True
+        box[y0:y1, x0:x0 + t] = True
+        box[y0:y1, max(x0, x1 - t):x1] = True
+    for i in replaced:
+        if 0 <= i < min(n_frames, mask_original.shape[0]):
+            objects[i, 2, :, :width] = mask_original[i].cpu() > 0.5
+    return {"packed_masks": _pack_bits(objects), "n_frames": int(n_frames),
+            "scores": [1.0] * len(PREVIEW_OBJECTS), "orig_size": (int(height), int(width))}
+
+
 # ── whole-clip crop planning ──────────────────────────────────────────────────
 # The follow mode decides each frame's crop from the frames before it (an EMA):
 # it either follows every wobble of the mask or lags behind the head. Planning
@@ -621,7 +835,8 @@ def _rate_limited(values, rate):
 
 
 def plan_track_crops(frames, boxes, sides, width, height, padding, hold=0.5,
-                     ease_frames=12, window=9, cut_jump=0.5, size_mode="follow", max_zoom_rate=1.02):
+                     ease_frames=12, window=9, cut_jump=0.5, size_mode="follow", max_zoom_rate=1.02,
+                     return_frames=12):
     """{frame: (x0, y0, side)} for the enhanced `frames` (sorted source indices),
     planned over each run (consecutive frames) as a whole.
 
@@ -637,7 +852,13 @@ def plan_track_crops(frames, boxes, sides, width, height, padding, hold=0.5,
     holds still while the face's size stays within the same margin, changes
     only as far as it must, eased, never below what keeps (1 - hold) of the
     padding, and by at most max_zoom_rate per frame (1 = no cap), starting
-    early enough to get there."""
+    early enough to get there.
+
+    A jump that comes back - the face's centre back within cut_jump x the crop
+    side of where it was, within `return_frames` frames - is not a cut: the
+    crop holds its course through it, as if the face had stayed on the line
+    between the frames either side. Only a jump that stays starts a new shot.
+    return_frames 0 makes every jump a cut."""
     plan, report = {}, []
     cap = min(width, height)
     runs, start = [], 0
@@ -653,12 +874,31 @@ def plan_track_crops(frames, boxes, sides, width, height, padding, hold=0.5,
         side_m = _median_track([sides[k] for k in run], window)
         fcx, fcy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
         extent = np.maximum(x1 - x0 + 1, y1 - y0 + 1)
-        # Shots: a jump in the (median) face centre is a cut, not motion.
-        shots, s0 = [], 0
-        for t in range(1, len(run) + 1):
-            if t == len(run) or math.hypot(fcx[t] - fcx[t - 1], fcy[t] - fcy[t - 1]) > cut_jump * side_m[t - 1]:
-                shots.append(range(s0, t))
-                s0 = t
+        # Shots: a jump in the (median) face centre that stays is a cut; one that
+        # comes back within return_frames is held through, on the line between.
+        def apart(a, b):
+            return math.hypot(fcx[a] - fcx[b], fcy[a] - fcy[b]) > cut_jump * side_m[b]
+        cuts, t = [], 1
+        while t < len(run):
+            if not apart(t, t - 1):
+                t += 1
+                continue
+            ref = t - 1
+            back = next((j for j in range(t + 1, min(len(run), t + int(return_frames) + 1))
+                         if not apart(j, ref)), None)
+            if back is None:
+                cuts.append(t)
+                t += 1
+                continue
+            for j in range(t, back):
+                f = (j - ref) / float(back - ref)
+                for track in (fcx, fcy, extent, side_m):
+                    track[j] = track[ref] + f * (track[back] - track[ref])
+            report.append(f"held through frames {frames[run[t]]}-{frames[run[back - 1]]} "
+                          f"(the face jumped and came back)")
+            t = back
+        edges = [0] + cuts + [len(run)]
+        shots = [range(a, b) for a, b in zip(edges[:-1], edges[1:])]
         for shot in shots:
             idx = np.array(list(shot))
             need = extent[idx] * (1.0 + float(padding) * (1.0 - float(hold)))
@@ -837,12 +1077,51 @@ class FaceTrackCropAndGate:
                                         "tooltip": "whole_clip, plan_size follow: the most the crop size may "
                                                    "change from one frame to the next, as a ratio. 1.02 = 2% a "
                                                    "frame (about 1.6x a second at 24 fps). 1 = no cap."}),
+                "glitch_frames": ("INT", {"default": 0, "min": 0, "max": 60, "step": 1,
+                                        "tooltip": "Ignore a stray mask: when the tracked mask jumps away - "
+                                                   "to another person, a hand - and comes back to where it was "
+                                                   "within this many frames, those frames get the face where it "
+                                                   "would be (the nearby good frame's mask, moved along with the "
+                                                   "face) for the gate, the crop, H3 Face Refine and paste-back. "
+                                                   "A jump that does not come back (a cut, or the face really "
+                                                   "moving) is kept. 0 = off."}),
+                "glitch_distance": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1,
+                                        "tooltip": "How far, in face sizes, the mask must jump (or how much it "
+                                                   "must change size: twice or half) to count as away, and how "
+                                                   "close it must come back to count as returned."}),
+                "glitch_fill": (list(GLITCH_FILLS), {"default": "move_nearest",
+                                        "tooltip": "What a stray span's frames get.\n"
+                                                   "move_nearest (default): the nearer good frame's mask, moved "
+                                                   "along the straight line between the good frames either side.\n"
+                                                   "interpolate: both good frames' masks, blended from one to "
+                                                   "the other in shape, at a size changing evenly between theirs, "
+                                                   "on a path that keeps the face's speed at both ends - no "
+                                                   "kink or pop where the span starts and ends."}),
+                "plan_return_frames": ("INT", {"default": 12, "min": 0, "max": 120, "step": 1,
+                                        "tooltip": "whole_clip: a jump of the face that comes back to where "
+                                                   "it was within this many frames is not a cut - the crop holds "
+                                                   "its course through it, on the line between the frames either "
+                                                   "side. Only a jump that stays starts a new shot (one clean "
+                                                   "jump of the crop). 0 = every jump is a cut."}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT", "INT", "BOOLEAN", "STRING")
+    RETURN_TYPES = ("IMAGE", "FACE_TRACK_DATA", "INT", "INT", "INT", "INT", "BOOLEAN", "STRING",
+                    "SAM3_TRACK_DATA")
     RETURN_NAMES = ("face_clip", "track_data", "target_size", "enhanced_frames",
-                    "num_runs", "frame_count", "enhanced", "report")
+                    "num_runs", "frame_count", "enhanced", "report", "preview_track")
+    OUTPUT_TOOLTIPS = (
+        "The face clip, one crop per enhanced frame, padded to the resampler's grid.",
+        "Where each crop came from, for paste-back and H3 Face Refine.",
+        "The resampler's working size.",
+        "How many frames are enhanced.",
+        "How many separate runs of enhanced frames there are.",
+        "The padded clip length: the resampler's length.",
+        "True when at least one frame is enhanced: the If/Else Switch's switch.",
+        "What was measured and done.",
+        "For SAM3 Track Preview's track_data (connect the source video to its images): "
+        "0 the face mask used, after any stray-mask repair; 1 the crop box on enhanced "
+        "frames; 2 the original mask on frames the repair replaced.")
     FUNCTION = "crop"
     CATEGORY = "masking/face_gate"
     DESCRIPTION = ("Per-frame size-gated crop clip for a tracked face: only "
@@ -855,7 +1134,8 @@ class FaceTrackCropAndGate:
              min_threshold_percent=0.1, resampler="minimax_h3",
              fixed_target_size=True, target_size=768, crop_planning="follow",
              plan_hold=0.5, plan_ease_frames=12, plan_window=9, plan_size="follow",
-             plan_max_zoom_rate=1.02):
+             plan_max_zoom_rate=1.02, glitch_frames=0, glitch_distance=1.0,
+             glitch_fill="move_nearest", plan_return_frames=12):
         if mask_track.dim() == 2:
             mask_track = mask_track.unsqueeze(0)
         B, H, W, C = images.shape
@@ -882,10 +1162,22 @@ class FaceTrackCropAndGate:
         lo_off = thr_min - hysteresis   # at/below this -> disable
 
         # Per-frame: box, and the normalized measure (None when face absent).
-        boxes, measures = [], []
+        boxes = [_frame_face_box((mask_track[i] > 0.5).cpu().numpy()) for i in range(N)]
+        # A mask that jumps away and comes back within glitch_frames is a stray,
+        # not the face: give those frames the face where it would be.
+        glitches = find_mask_glitches(boxes, int(glitch_frames), float(glitch_distance))
+        raw_mask_track = mask_track
+        boxes, mask_track = repair_mask_glitches(boxes, mask_track, glitches, glitch_fill)
+        replaced = [i for a, b, _x, _y in glitches for i in range(a, b)]
+        glitch_note = ""
+        if glitches:
+            glitch_note = (" | stray mask ignored on " + ", ".join(
+                f"frames {a}-{b - 1}" if b - a > 1 else f"frame {a}" for a, b, _x, _y in glitches))
+            glitch_note += f" ({glitch_fill})"
+            print("[FaceTrackCropAndGate]" + glitch_note[2:])
+        measures = []
         for i in range(N):
-            info = _frame_face_box((mask_track[i] > 0.5).cpu().numpy())
-            boxes.append(info)
+            info = boxes[i]
             if info is None:
                 measures.append(None)
                 continue
@@ -930,7 +1222,7 @@ class FaceTrackCropAndGate:
               f"the threshold_type={threshold_type} column.")
 
         def _make_report(n_enh, drops=""):
-            return (size_report + f" | threshold_type={threshold_type}, "
+            return (size_report + glitch_note + f" | threshold_type={threshold_type}, "
                     f"max_threshold_percent={thr * 100:.2f}%, "
                     f"min_threshold_percent={thr_min * 100:.2f}% -> "
                     f"{n_enh} frame(s) enhanced" + drops)
@@ -1045,7 +1337,9 @@ class FaceTrackCropAndGate:
             # so the whole enhance branch (Resize/H3/sampler) is SKIPPED — the dummy
             # never reaches a resize node (which would collapse to 0 under
             # divisible_by) and the original video passes through on_false.
-            return (dummy, data, target_size, 0, 0, dummy_len, False, _make_report(0, _drop_note))
+            preview = crop_preview_track(mask_track, raw_mask_track, [], replaced, N, H, W)
+            return (dummy, data, target_size, 0, 0, dummy_len, False, _make_report(0, _drop_note),
+                    preview)
 
         # ── Crop each enhanced frame TIGHT to its own face bbox + padding ──────
         # Earlier versions used one constant SQUARE window sized to the max face
@@ -1122,7 +1416,7 @@ class FaceTrackCropAndGate:
             planned, plan_report = plan_track_crops(
                 [pf[0] for pf in per_frame], boxes, [pf[3] for pf in per_frame], W, H, padding,
                 plan_hold, plan_ease_frames, plan_window, size_mode=plan_size,
-                max_zoom_rate=plan_max_zoom_rate)
+                max_zoom_rate=plan_max_zoom_rate, return_frames=plan_return_frames)
             plan_note = " | whole_clip plan: " + "; ".join(plan_report)
             print("[FaceTrackCropAndGate]" + plan_note[2:])
         clip, entries = [], []
@@ -1227,8 +1521,9 @@ class FaceTrackCropAndGate:
         # frame_count = the (padded) clip length; feed the resampler's `length`
         # from this directly instead of a separate GetImageSizeAndCount node.
         # enhanced = True: >=1 frame qualified, so the enhance branch should run.
+        preview = crop_preview_track(mask_track, raw_mask_track, entries, replaced, N, H, W)
         return (face_clip, data, target_size, n_real, n_runs, target_len,
-                n_real > 0, _make_report(n_real, _drop_note + plan_note))
+                n_real > 0, _make_report(n_real, _drop_note + plan_note), preview)
 
 
 class FaceTrackSelectRun:
@@ -1374,21 +1669,22 @@ class FaceTrackPasteBack:
                                       "tooltip": "Edge softness. In 'mask' mode: Gaussian-blur radius of the "
                                                  "face-shaped alpha, as a fraction of the crop side. In 'rectangle' "
                                                  "mode: width of the linear edge ramp."}),
-                "blend_mode": (["mask", "rectangle"], {"default": "rectangle",
-                                        "tooltip": "'rectangle' (default) writes the WHOLE crop window with a linear "
+                "blend_mode": (["mask", "rectangle"], {"default": "mask",
+                                        "tooltip": "'mask' (default) composites using the FACE-SHAPED segmentation "
+                                                   "alpha: only face pixels are written, there is no square seam, "
+                                                   "and people or things next to the face are left as they were - "
+                                                   "the match for H3 Face Refine's mask_region 'face'.\n"
+                                                   "'rectangle' writes the WHOLE crop window with a linear "
                                                    "edge ramp, so everything the resampler changed is kept — hair, "
                                                    "jawline and the pixels just outside the mask — at the cost of a "
                                                    "soft rectangular boundary.\n"
-                                                   "'mask' composites using the FACE-SHAPED segmentation alpha "
-                                                   "instead: only face pixels are written and there is no square "
-                                                   "seam, but anything the mask excludes is discarded.\n"
-                                                   "WHY rectangle is the default: that alpha is cut from the mask "
+                                                   "Mind with 'mask': that alpha is cut from the mask "
                                                    "track of the ORIGINAL frames, so it describes the face BEFORE "
                                                    "refinement. Stronger denoise moves the face shape, and the new "
                                                    "jawline/hairline then falls outside the old silhouette and gets "
                                                    "clipped - the tighter the mask, the more visibly it breaks. "
-                                                   "'mask' is the better choice at low denoise, where the shape "
-                                                   "barely moves and a tight alpha leaves the background untouched."}),
+                                                   "Raise feather, or use 'rectangle', if the edge breaks at high "
+                                                   "denoise."}),
                 "only_present_frames": ("BOOLEAN", {"default": True,
                                         "tooltip": "Only composite frames where the face was actually detected."}),
                 "colour_match": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -1410,7 +1706,7 @@ class FaceTrackPasteBack:
                    "(undoing upscale_ratio) and composite per frame.")
 
     def paste(self, original_images, processed_clip, track_data, feather,
-              blend_mode="rectangle", only_present_frames=True, colour_match=0.0):
+              blend_mode="mask", only_present_frames=True, colour_match=0.0):
         out = original_images.clone()
         entries = track_data.get("entries", [])
         if len(entries) == 0:
@@ -1595,10 +1891,11 @@ class H3FaceRefine:
                     "tooltip": "Smooth the strength curve over time; abrupt denoise changes read as a pop."}),
             },
             "optional": {
-                "mask_region": (["crop", "face"], {"default": "crop",
-                    "tooltip": "Where the clip is resampled. crop: the whole crop (as before). face: "
-                               "only the tracked face (its mask from the crop node), grown and "
-                               "feathered below; everything else in the crop is kept as it is. Either "
+                "mask_region": (["crop", "face"], {"default": "face",
+                    "tooltip": "Where the clip is resampled. face (default): only the tracked face (its "
+                               "mask from the crop node), grown and feathered below; everything else in "
+                               "the crop - a second person's face included - is kept as it is. crop: the "
+                               "whole crop. Either "
                                "way the mask is reduced onto H3's latent grid: a latent cell is "
                                "resampled if any pixel or frame it covers is."}),
                 "mask_grow": ("INT", {"default": 32, "min": -256, "max": 512, "step": 4,
@@ -1631,7 +1928,7 @@ class H3FaceRefine:
     def run(self, model, av_latent, images, vae, track_data,
             strength_small_face, strength_large_face,
             gamma, smooth_frames, audio_vae=None, audio=None,
-            mask_region="crop", mask_grow=32, mask_feather=16):
+            mask_region="face", mask_grow=32, mask_feather=16):
         import comfy.nested_tensor
         reports = []
 
@@ -1882,10 +2179,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FaceSizeGateMask": "Face Size Gate (Mask)",
     "FaceCropAndGate": "Face Crop & Gate (per-face)",
     "FacePasteBack": "Face Paste Back (per-face)",
-    "FaceTrackCropAndGate": "Face Track Crop & Gate (coherent)",
+    "FaceTrackCropAndGate": "Face Track Crop & Gate",
     "FaceTrackSelectRun": "Face Track Select Run (per-run)",
     "FaceTrackRunCount": "Face Track Run Count",
-    "FaceTrackPasteBack": "Face Track Paste Back (coherent)",
+    "FaceTrackPasteBack": "Face Track Paste Back",
     "MaskHasFace": "Mask Has Face (bool)",
     "H3FaceRefine": "MiniMax H3 Face Refine",
     "FaceTrackAudioSlice": "Face Track Audio Slice",

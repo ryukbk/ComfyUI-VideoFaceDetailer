@@ -73,7 +73,8 @@ SPEC = {
         "inputs": [("images", "IMAGE"), ("mask_track", "MASK")],
         "outputs": [("face_clip", "IMAGE"), ("track_data", "FACE_TRACK_DATA"),
                     ("target_size", "INT"), ("enhanced_frames", "INT"), ("num_runs", "INT"),
-                    ("frame_count", "INT"), ("enhanced", "BOOLEAN"), ("report", "STRING")],
+                    ("frame_count", "INT"), ("enhanced", "BOOLEAN"), ("report", "STRING"),
+                    ("preview_track", "SAM3_TRACK_DATA")],
     },
     "FaceTrackSelectRun": {
         "inputs": [("face_clip", "IMAGE"), ("track_data", "FACE_TRACK_DATA")],
@@ -266,7 +267,7 @@ NODES_TRACK = {
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     # mask_track wired straight from SAM3_TrackToMask (no GetMaskSizeAndCount needed —
     # the gate's `report` output already surfaces frame/size counts).
-    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02, 6, 1.0, "interpolate", 12],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
            {"image": ("7", 0), "width": ("7", 2), "height": ("7", 2)}),
@@ -282,7 +283,7 @@ NODES_TRACK = {
     "15": ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
            {"model": ("10", 0), "positive": ("14", 0), "negative": ("14", 1), "latent_image": ("13", 2)}),
     "16": ("VAEDecode", [], {"samples": ("15", 0), "vae": ("10", 2)}),
-    "20": ("FaceTrackPasteBack", [0.15, "rectangle", True],
+    "20": ("FaceTrackPasteBack", [0.15, "mask", True],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
     # If/Else Switch (core ComfySwitchNode): on_true = the detailer output (node 20), on_false = original
     # video (node 1). The switch is driven by FaceTrackCropAndGate's `enhanced`
@@ -473,7 +474,7 @@ NODES_PERRUN = {
     "4":  ("SAM3_VideoTrack", [0.5, 4, 1], {"images": ("1", 0), "model": ("2", 0), "conditioning": ("3", 0)}),
     "5":  ("SAM3_TrackToMask", ["0"], {"track_data": ("4", 0)}),
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
-    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
+    "7":  ("FaceTrackCropAndGate", [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "ltx", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02, 6, 1.0, "interpolate", 12],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     "10": ("CheckpointLoaderSimple", ["ltxv-2b.safetensors"], {}),
     "11": ("CLIPTextEncode", ["a sharp, detailed, high quality close-up of a human face, consistent identity"], {"clip": ("10", 1)}),
@@ -495,7 +496,7 @@ def _branch_numeric(base, run_index, prev_paste_ref):
         ks: ("KSampler", [0, "fixed", 30, 3.0, "euler", "normal", 0.4],
              {"model": ("10", 0), "positive": (cond, 0), "negative": (cond, 1), "latent_image": (i2v, 2)}),
         dec: ("VAEDecode", [], {"samples": (ks, 0), "vae": ("10", 2)}),
-        pst: ("FaceTrackPasteBack", [0.15, "rectangle", True],
+        pst: ("FaceTrackPasteBack", [0.15, "mask", True],
               {"original_images": prev_paste_ref, "processed_clip": (dec, 0), "track_data": (sel, 1)}),
     }
     return frag, (pst, 0)
@@ -529,28 +530,12 @@ LAYOUT_PERRUN["99"] = (13, 0)
 # audio, since the original track is locked exactly rather than regenerated.
 # Shared by both H3 graphs - edit here and both workflows pick it up.
 H3_PROMPT = (
-    "subject_definitions:\n"
-    "<Subject 1> is the person in <Picture 1>. <Audio 1> is the speech/voice "
-    "reference for <Subject 1> (S1) — the spoken vocal track the mouth must follow.\n\n"
-    "summary:\n"
-    "[reference generation + audio reference] The target video is a sharp, "
-    "detailed close-up 8K footage of <Subject 1> speaking naturally, keeping the "
-    "exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\n"
-    "retention_analysis:\n"
-    "<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial "
-    "features, identity and skin texture from <Picture 1> are retained.\n"
-    "<Audio 1>: fully_copy - the mouth shapes and speech timing follow this "
-    "audio exactly for lip-sync.\n\n"
-    "detailed_description:\n"
-    "The target video is a high-quality, sharp, naturally-lit close-up in a "
-    "realistic photographic style.\n"
-    "[Shot 1] <Subject 1> (S1), the person from <Picture 1>, faces the camera in "
-    "soft natural light, preserving the exact identity, facial features and skin "
-    "texture from <Picture 1>. Speaking naturally and lip-syncing precisely to "
-    "<Audio 1>, the lips, mouth and jaw move in time with the speech while the "
-    "identity stays consistent.\n\n"
-    "overall_soundscape: <Audio 1> is directly reused.\n\n"
-    "non_diegetic_music: N/A"
+    "subject_definitions:\n<Subject 1> is the face of the person in <Picture 1>. <Audio 1> is the speech/voice reference for <Subject 1> (S1) — the spoken vocal track the mouth must follow.\n\n"
+    "summary:\n[reference generation + audio reference] The target video is a sharp, detailed close-up 8K footage of <Subject 1> speaking naturally, keeping the exact identity from <Picture 1> and lip-syncing precisely to <Audio 1>.\n\n"
+    "retention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - the exact facial features, identity and skin texture from <Picture 1> are retained.\n<Audio 1>: fully_copy - the mouth shapes and speech timing follow this audio exactly for lip-sync.\n\n"
+    "detailed_description:\nThe target video is a high-quality, sharp, naturally-lit close-up in a realistic photographic style.\n"
+    "[Shot 1] <Subject 1> (S1) from <Picture 1> is shown, preserving the exact identity, facial features and skin texture from <Picture 1>. <Subject 1> is speaking naturally and lip-syncing precisely to <Audio 1>, the lips, mouth and jaw move in time with the speech while the identity stays consistent.\n\n"
+    "overall_soundscape: <Audio 1> is directly reused.\nnon_diegetic_music: N/A"
 )
 
 
@@ -577,7 +562,7 @@ NODES_H3 = {
     # straight from SAM3_TrackToMask (no GetMaskSizeAndCount; the gate's `report`
     # output already surfaces frame/size counts).
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02, 6, 1.0, "interpolate", 12],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ×32 canvas (H3 needs width/height divisible by 32).
     "8":  ("ImageResizeKJv2", [512, 512, "lanczos", "stretch", "0, 0, 0", "center", 32, "cpu"],
@@ -609,7 +594,7 @@ NODES_H3 = {
            {"audio": ("1", 2), "track_data": ("7", 1), "source_fps": ("22", 0)}),
     # One node: img2img inject (face clip) + lip-sync (original audio) + per-frame
     # denoise. Outputs the patched model and the prepared AV latent.
-    "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "crop", 32, 16],
+    "48": ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "face", 32, 16],
            {"model": ("56", 0), "av_latent": ("47", 1), "images": ("8", 0), "vae": ("43", 0),
             "track_data": ("7", 1), "audio_vae": ("44", 0), "audio": ("57", 0)}),
     # Flow-shift schedule, patched straight after the Lora loader. The VIDEO shift
@@ -630,7 +615,7 @@ NODES_H3 = {
             "sigmas": ("52", 0), "latent_image": ("48", 1)}),
     "16": ("VAEDecode", [], {"samples": ("55", 0), "vae": ("43", 0)}),
     # colour_match=1.0 -> match refined face tone to the original region (edge seam).
-    "20": ("FaceTrackPasteBack", [0.15, "rectangle", True, 1.0],
+    "20": ("FaceTrackPasteBack", [0.15, "mask", True, 1.0],
            {"original_images": ("1", 0), "processed_clip": ("16", 0), "track_data": ("7", 1)}),
     # If/Else Switch (core ComfySwitchNode): on_true = detailer output (20),
     # on_false = original video (1).
@@ -703,7 +688,7 @@ NODES_H3_PERRUN = {
     "22": ("VHS_VideoInfo", [], {"video_info": ("1", 3)}),
     "9":  ("SAM3_TrackPreview", [0.5, 24.0], {"track_data": ("4", 0), "images": ("1", 0), "fps": ("22", 0)}),
     "7":  ("FaceTrackCropAndGate",
-           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02],
+           [2.0, "area", 0.5, 0.1, 0.0, 1.5, 1.0, 0.5, 0.0, "minimax_h3", True, 768, "whole_clip", 0.5, 12, 9, "follow", 1.02, 6, 1.0, "interpolate", 12],
            {"images": ("1", 0), "mask_track": ("5", 0)}),
     # ── H3 models, loaded once and shared by every branch ──
     "40": ("UNETLoader", ["minimax_h3_ref2va.safetensors", "default"], {}),
@@ -742,7 +727,7 @@ def _h3_branch(base, run_index, prev_paste_ref):
               {"clip": ("42", 0), "vae": ("43", 0), "audio_vae": ("44", 0),
                "ref_images.ref_image_0": ("45", 0), "ref_audios.ref_audio_0": (aud, 0),
                "width": (rsz, 1), "height": (rsz, 2), "length": (sel, 4)}),
-        refine: ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "crop", 32, 16],
+        refine: ("H3FaceRefine", [1.0, 0.35, 1.0, 9, "face", 32, 16],
                  {"model": ("56", 0), "av_latent": (ref, 1), "images": (rsz, 0),
                   "vae": ("43", 0), "track_data": (sel, 1), "audio_vae": ("44", 0),
                   "audio": (aud, 0)}),
@@ -753,7 +738,7 @@ def _h3_branch(base, run_index, prev_paste_ref):
                    "sigmas": (sched, 0), "latent_image": (refine, 1)}),
         dec: ("VAEDecode", [], {"samples": (sampler, 0), "vae": ("43", 0)}),
         # colour_match=1.0 -> match the refined face's tone to the region it replaces.
-        pst: ("FaceTrackPasteBack", [0.15, "rectangle", True, 1.0],
+        pst: ("FaceTrackPasteBack", [0.15, "mask", True, 1.0],
               {"original_images": prev_paste_ref, "processed_clip": (dec, 0),
                "track_data": (sel, 1)}),
     }

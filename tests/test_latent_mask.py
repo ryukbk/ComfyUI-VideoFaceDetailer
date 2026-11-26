@@ -149,3 +149,22 @@ def test_crop_mode_is_uniform_over_the_crop(comfy_stub):
     assert video_mask[0, 0].std(dim=(-2, -1)).max() == 0        # one value per latent frame
     assert video_mask.min() > 0
     assert "mask: whole crop" in report
+
+
+def test_growing_is_a_square_max_filter_and_fast_at_clip_size():
+    import time
+    import torch.nn.functional as F
+    from nodes import _grow_mask
+    torch.manual_seed(0)
+    m = (torch.rand(2, 120, 160) > 0.99).float()
+    m[:, 40:70, 50:90] = 1.0
+    for r in (1, 7, 32):
+        grown = F.max_pool2d(m[:, None], 2 * r + 1, stride=1, padding=r)[:, 0]
+        shrunk = -F.max_pool2d(-m[:, None], 2 * r + 1, stride=1, padding=r)[:, 0]
+        assert torch.equal(_grow_mask(m, r), grown) and torch.equal(_grow_mask(m, -r), shrunk)
+    # It froze H3FaceRefine: a 65 x 65 max filter took ~13 s per 768 px frame on CPU.
+    cm = torch.zeros(300, 300)
+    cm[100:200, 110:190] = 1.0
+    start = time.time()
+    face_region_masks([{"present": True, "cmask": cm.clone()} for _ in range(20)], 768, 768, 32, 16)
+    assert time.time() - start < 5.0

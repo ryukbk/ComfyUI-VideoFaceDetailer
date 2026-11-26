@@ -128,3 +128,33 @@ def test_the_zoom_rate_is_capped():
     images, mask, _ = growing_face(n=30, start=20, end=80)
     sides = np.array([b[2] for b in boxes_of(plan_size(images, mask, "follow", rate=1.03))], dtype=float)
     assert (sides[1:] / sides[:-1]).max() <= 1.03 + 2 / sides.min()      # 3% a frame, give or take rounding
+
+
+def jump_and_back(n_away, n=40, start=15):
+    """A face at (200, 180) that jumps to (450, 180) for n_away frames, then back."""
+    mask = torch.zeros(n, H, W)
+    for i in range(n):
+        x = 450 if start <= i < start + n_away else 200
+        mask[i, 168:192, x - 12:x + 12] = 1.0
+    return torch.rand(n, H, W, 3), mask
+
+
+def test_a_jump_that_comes_back_is_held_through_not_cut_twice():
+    images, mask = jump_and_back(8)                              # longer than the median hides
+    args = (images, mask, 2.0, "width", 20.0, 0.0, 1.5, 1.0, 0.5, 0.0, 0.0, "ltx", True, 256)
+    held = FaceTrackCropAndGate().crop(*args, crop_planning="whole_clip", plan_window=9,
+                                       plan_return_frames=12)
+    cut = FaceTrackCropAndGate().crop(*args, crop_planning="whole_clip", plan_window=9,
+                                      plan_return_frames=0)
+    assert len(set(boxes_of(held[1]))) == 1                      # the crop holds its course
+    assert len({b[0] for b in boxes_of(cut[1])}) > 1             # as cuts: out and back
+    assert "held through frames" in held[7]
+
+
+def test_a_jump_that_stays_is_still_a_cut():
+    images, mask = jump_and_back(25)                             # stays away to the end
+    out = FaceTrackCropAndGate().crop(images, mask, 2.0, "width", 20.0, 0.0, 1.5, 1.0, 0.5, 0.0, 0.0,
+                                      "ltx", True, 256, crop_planning="whole_clip", plan_return_frames=12)
+    xs = [b[0] for b in boxes_of(out[1])]
+    assert xs[0] < 250 < xs[-1]                                   # it follows the face there
+    assert "held through" not in out[7]
